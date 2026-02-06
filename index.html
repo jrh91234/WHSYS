@@ -67,16 +67,15 @@
         const { useState, useEffect, useMemo, useRef } = React;
 
         // --- Configuration ---
-        const ADMIN_PASS = "1111"; 
         const STORAGE_KEY_INV = "nlc_erp_inventory";
         const STORAGE_KEY_TRANS = "nlc_erp_transactions";
         const STORAGE_KEY_API_URL = "nlc_erp_api_url";
         const STORAGE_KEY_USERS = "nlc_erp_users";
-        const STORAGE_KEY_SESSION = "nlc_erp_session"; // เพิ่ม key สำหรับเก็บ session
+        const STORAGE_KEY_SESSION = "nlc_erp_session"; 
+        const STORAGE_KEY_BOM_DATA = "nlc_erp_bom_data";
 
         // *** ใส่ URL ของ Google Apps Script ที่นี่ เพื่อให้ใช้งานบนมือถือได้ทันที ***
-        // เช่น const DEFAULT_API_URL = "https://script.google.com/macros/s/AKfycb.../exec";
-        const DEFAULT_API_URL = "https://script.google.com/macros/s/AKfycbxg5wvKaH_JCCGAg1GmN_Hic9Pcuav63swUb5uQOn_C63wfw0bA_7-tTUIWyY0u5CFR/exec"; 
+        const DEFAULT_API_URL = ""; 
         
         const INITIAL_INVENTORY = [
             { partNo: "DEMO-001", name: "Demo Item (Local)", qty: 100, location: "A1", unit: "PCS", minStock: 20 }
@@ -110,7 +109,7 @@
 
             const handleMouseDown = (e) => {
                 e.preventDefault();
-                e.stopPropagation(); // Stop sorting if clickable
+                e.stopPropagation(); 
                 setResizing(true);
                 startX.current = e.pageX;
                 startWidth.current = width;
@@ -189,31 +188,28 @@
             const [inventory, setInventory] = useState(() => getStorage(STORAGE_KEY_INV, INITIAL_INVENTORY));
             const [transactions, setTransactions] = useState(() => getStorage(STORAGE_KEY_TRANS, []));
             const [users, setUsers] = useState(() => getStorage(STORAGE_KEY_USERS, INITIAL_USERS));
+            const [bomData, setBomData] = useState(() => getStorage(STORAGE_KEY_BOM_DATA, {}));
             
-            // Initialize API URL from Storage OR Default Constant
             const [apiUrl, setApiUrl] = useState(() => localStorage.getItem(STORAGE_KEY_API_URL) || DEFAULT_API_URL);
             
             const [isLoading, setIsLoading] = useState(false);
+            const [isBomSyncing, setIsBomSyncing] = useState(false);
             const [isCloud, setIsCloud] = useState(false);
 
-            // Check cloud connection on load
+            // Check cloud connection
             useEffect(() => {
-                if (apiUrl) {
-                    setIsCloud(true);
-                    fetchCloudData();
-                }
+                if (apiUrl) setIsCloud(true);
             }, [apiUrl]);
 
-            // Save to local as backup
+            // Save to local
             useEffect(() => {
-                if (!isCloud) {
-                    setStorage(STORAGE_KEY_INV, inventory);
-                    setStorage(STORAGE_KEY_TRANS, transactions);
-                    setStorage(STORAGE_KEY_USERS, users);
-                }
-            }, [inventory, transactions, users, isCloud]);
+                setStorage(STORAGE_KEY_INV, inventory);
+                setStorage(STORAGE_KEY_TRANS, transactions);
+                setStorage(STORAGE_KEY_USERS, users);
+                setStorage(STORAGE_KEY_BOM_DATA, bomData);
+            }, [inventory, transactions, users, bomData]);
 
-            // Save Session State whenever currentUser changes
+            // Save Session
             useEffect(() => {
                 if (currentUser) {
                     setStorage(STORAGE_KEY_SESSION, currentUser);
@@ -222,25 +218,39 @@
                 }
             }, [currentUser]);
 
-            const fetchCloudData = async () => {
+            // Auto Fetch on Login
+            useEffect(() => {
+                if (currentUser && apiUrl) {
+                    fetchAllData();
+                }
+            }, [currentUser, apiUrl]);
+
+            const fetchAllData = async () => {
                 if (!apiUrl) return;
                 setIsLoading(true);
+                setIsBomSyncing(true);
                 try {
-                    const res = await fetch(apiUrl + "?action=getData");
-                    const data = await res.json();
+                    // Fetch General Data
+                    const resData = await fetch(apiUrl + "?action=getData");
+                    const data = await resData.json();
+                    
                     if (data.inventory) setInventory(data.inventory);
                     if (data.transactions) setTransactions(data.transactions);
                     if (data.users) setUsers(data.users);
+
+                    // Fetch BOM Data
+                    const resBOM = await fetch(apiUrl + "?action=getBOM");
+                    const dataBOM = await resBOM.json();
                     
-                    // Backup cloud data to local
-                    if (data.inventory) setStorage(STORAGE_KEY_INV, data.inventory);
-                    if (data.transactions) setStorage(STORAGE_KEY_TRANS, data.transactions);
-                    if (data.users) setStorage(STORAGE_KEY_USERS, data.users);
+                    if (Object.keys(dataBOM).length > 0) {
+                        setBomData(dataBOM);
+                    }
                     
                 } catch (error) {
-                    console.error("Cloud Error:", error);
+                    console.error("Sync Error:", error);
                 } finally {
                     setIsLoading(false);
+                    setIsBomSyncing(false);
                 }
             };
 
@@ -252,7 +262,7 @@
 
                 if (user) {
                     setCurrentUser(user);
-                    setInputPass(""); // Clear password
+                    setInputPass(""); 
                 } else {
                     alert("Username หรือ Password ไม่ถูกต้อง");
                 }
@@ -263,11 +273,8 @@
                     id: Date.now().toString(), 
                     date: new Date().toISOString(), 
                     type, partNo, qty: parseFloat(qty), refDoc, note,
-                    user: currentUser?.name || 'Unknown' // Track who did it
+                    user: currentUser?.name || 'Unknown' 
                 };
-
-                const prevInv = [...inventory];
-                const prevTrans = [...transactions];
 
                 setTransactions(prev => [newTx, ...prev]);
                 
@@ -276,7 +283,7 @@
                 
                 if (existingIndex >= 0) {
                     let newQty = updatedInv[existingIndex].qty;
-                    if (type === 'IN') newQty += parseFloat(qty);
+                    if (type === 'IN' || type === 'INIT') newQty += parseFloat(qty);
                     else if (type === 'OUT') newQty -= parseFloat(qty);
                     else if (type === 'ADJUST') newQty = parseFloat(qty);
                     updatedInv[existingIndex] = { ...updatedInv[existingIndex], qty: newQty };
@@ -286,47 +293,28 @@
                 setInventory(updatedInv);
 
                 if (isCloud && apiUrl) {
-                    setIsLoading(true);
                     try {
-                        const res = await fetch(apiUrl, {
+                        await fetch(apiUrl, {
                             method: "POST",
                             mode: "no-cors", 
                             headers: { "Content-Type": "text/plain" },
-                            body: JSON.stringify({ 
-                                action: "add_transaction", 
-                                data: newTx,
-                                itemData: newItemData 
-                            })
+                            body: JSON.stringify({ action: "add_transaction", data: newTx, itemData: newItemData })
                         });
-                        setTimeout(fetchCloudData, 1500); 
-                    } catch (e) {
-                        alert("Cloud Sync Error: " + e.message);
-                    }
+                    } catch (e) { console.error(e); }
                 }
             };
 
             const deleteItem = async (partNo) => {
                  const newInv = inventory.filter(i => i.partNo !== partNo);
                  setInventory(newInv);
-                 
                  if (isCloud && apiUrl) {
-                    setIsLoading(true);
-                    await fetch(apiUrl, {
-                        method: "POST",
-                        mode: "no-cors",
-                        headers: { "Content-Type": "text/plain" },
-                        body: JSON.stringify({ action: "delete_item", partNo: partNo })
-                    });
-                    setTimeout(fetchCloudData, 1000);
-                 } else {
-                     addTransaction('ADJUST', partNo, 0, 'DELETE', 'Deleted locally');
-                 }
+                    await fetch(apiUrl, { method: "POST", mode: "no-cors", headers: { "Content-Type": "text/plain" }, body: JSON.stringify({ action: "delete_item", partNo: partNo }) });
+                 } else { addTransaction('ADJUST', partNo, 0, 'DELETE', 'Deleted locally'); }
             };
 
             const saveUser = async (user) => {
                 let newUsers = [...users];
                 const isNew = !user.id;
-                
                 if (isNew) {
                     if (users.some(u => u.username === user.username)) return alert("Username already exists");
                     user.id = Date.now();
@@ -334,90 +322,32 @@
                 } else {
                     newUsers = newUsers.map(u => u.id === user.id ? { ...u, ...user } : u);
                 }
-                
                 setUsers(newUsers); 
-
                 if (isCloud && apiUrl) {
-                    setIsLoading(true);
-                    try {
-                        await fetch(apiUrl, {
-                            method: "POST",
-                            mode: "no-cors",
-                            headers: { "Content-Type": "text/plain" },
-                            body: JSON.stringify({ action: "save_user", user: user })
-                        });
-                        setTimeout(fetchCloudData, 1000);
-                    } catch (e) {
-                        alert("Cloud Sync Error (User): " + e.message);
-                    }
+                    try { await fetch(apiUrl, { method: "POST", mode: "no-cors", headers: { "Content-Type": "text/plain" }, body: JSON.stringify({ action: "save_user", user: user }) }); } catch (e) { console.error(e); }
                 }
             };
 
             const deleteUser = async (id) => {
                 setUsers(users.filter(u => u.id !== id));
-                
                 if (isCloud && apiUrl) {
-                    setIsLoading(true);
-                    try {
-                        await fetch(apiUrl, {
-                            method: "POST",
-                            mode: "no-cors",
-                            headers: { "Content-Type": "text/plain" },
-                            body: JSON.stringify({ action: "delete_user", id: id })
-                        });
-                        setTimeout(fetchCloudData, 1000);
-                    } catch (e) {
-                        alert("Cloud Sync Error (Delete User): " + e.message);
-                    }
+                    try { await fetch(apiUrl, { method: "POST", mode: "no-cors", headers: { "Content-Type": "text/plain" }, body: JSON.stringify({ action: "delete_user", id: id }) }); } catch (e) { console.error(e); }
                 }
             };
-
 
             if (!currentUser) {
                 return (
                     <div className="min-h-screen flex items-center justify-center bg-slate-800 p-4">
                         <div className="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-sm text-center animate-fade-in">
-                            <div className="w-20 h-20 bg-blue-600 rounded-full flex items-center justify-center mx-auto mb-6 shadow-lg shadow-blue-500/50">
-                                <Icons.Warehouse className="text-white text-3xl" />
-                            </div>
+                            <div className="w-20 h-20 bg-blue-600 rounded-full flex items-center justify-center mx-auto mb-6 shadow-lg shadow-blue-500/50"><Icons.Warehouse className="text-white text-3xl" /></div>
                             <h1 className="text-2xl font-bold text-slate-800">NLC Factory ERP</h1>
                             <p className="text-slate-500 text-sm mb-6">Cloud & Warehouse System</p>
-                            
                             <div className="text-left space-y-3">
-                                <div>
-                                    <label className="text-xs font-bold text-slate-500 ml-1">Username</label>
-                                    <div className="relative">
-                                        <Icons.User className="absolute left-3 top-3 text-slate-400"/>
-                                        <input type="text" value={inputUser} onChange={e=>setInputUser(e.target.value)} 
-                                            className="w-full pl-10 p-3 border border-slate-300 rounded-xl focus:ring-4 focus:ring-blue-100 outline-none transition"
-                                            placeholder="admin"
-                                        />
-                                    </div>
-                                </div>
-                                <div>
-                                    <label className="text-xs font-bold text-slate-500 ml-1">Password</label>
-                                    <div className="relative">
-                                        <Icons.Key className="absolute left-3 top-3 text-slate-400"/>
-                                        <input type="password" value={inputPass} onChange={e=>setInputPass(e.target.value)} 
-                                            onKeyDown={e=>e.key==='Enter'&&handleLogin()}
-                                            className="w-full pl-10 p-3 border border-slate-300 rounded-xl focus:ring-4 focus:ring-blue-100 outline-none transition"
-                                            placeholder="••••"
-                                        />
-                                    </div>
-                                </div>
+                                <div><label className="text-xs font-bold text-slate-500 ml-1">Username</label><div className="relative"><Icons.User className="absolute left-3 top-3 text-slate-400"/><input type="text" value={inputUser} onChange={e=>setInputUser(e.target.value)} className="w-full pl-10 p-3 border border-slate-300 rounded-xl focus:ring-4 focus:ring-blue-100 outline-none transition" placeholder="admin"/></div></div>
+                                <div><label className="text-xs font-bold text-slate-500 ml-1">Password</label><div className="relative"><Icons.Key className="absolute left-3 top-3 text-slate-400"/><input type="password" value={inputPass} onChange={e=>setInputPass(e.target.value)} onKeyDown={e=>e.key==='Enter'&&handleLogin()} className="w-full pl-10 p-3 border border-slate-300 rounded-xl focus:ring-4 focus:ring-blue-100 outline-none transition" placeholder="••••"/></div></div>
                             </div>
-                            
                             <button onClick={handleLogin} className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 transition shadow-lg mt-6">Login System</button>
-                            
-                            <div className="mt-4 text-center">
-                                {isLoading ? (
-                                    <span className="text-xs text-blue-400 flex justify-center items-center gap-2 animate-pulse"><div className="loader w-3 h-3"></div> กำลังโหลดข้อมูลผู้ใช้จาก Cloud...</span>
-                                ) : isCloud ? (
-                                    <span className="text-[10px] text-green-500"><i className="fa-solid fa-cloud"></i> Cloud Connected</span>
-                                ) : (
-                                    <span className="text-[10px] text-slate-400"><i className="fa-solid fa-cloud-slash"></i> Offline Mode</span>
-                                )}
-                            </div>
+                            <div className="mt-4 text-center">{isLoading ? <span className="text-xs text-blue-400 flex justify-center items-center gap-2 animate-pulse"><div className="loader w-3 h-3"></div> Loading User Data...</span> : isCloud ? <span className="text-[10px] text-green-500"><i className="fa-solid fa-cloud"></i> Cloud Connected</span> : <span className="text-[10px] text-slate-400"><i className="fa-solid fa-cloud-slash"></i> Offline Mode</span>}</div>
                         </div>
                     </div>
                 );
@@ -426,52 +356,26 @@
             return (
                 <div className="flex h-screen overflow-hidden bg-slate-100">
                     <aside className="w-64 bg-slate-900 text-slate-300 flex flex-col shadow-xl z-20 hidden md:flex">
-                        <div className="p-6 border-b border-slate-800 flex items-center gap-3">
-                            <div className="w-8 h-8 bg-blue-500 rounded flex items-center justify-center text-white font-bold"><i className="fa-solid fa-cube"></i></div>
-                            <div><h2 className="font-bold text-white leading-tight">NLC ERP</h2><span className="text-[10px] text-slate-500">Cloud Edition</span></div>
-                        </div>
-                        <div className="p-4 bg-slate-800/50 flex items-center gap-3 border-b border-slate-800">
-                            <div className="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center text-slate-400"><Icons.User/></div>
-                            <div>
-                                <div className="text-sm font-bold text-white">{currentUser.name}</div>
-                                <div className="text-[10px] uppercase text-blue-400 font-bold tracking-wider">{currentUser.role}</div>
-                            </div>
-                        </div>
+                        <div className="p-6 border-b border-slate-800 flex items-center gap-3"><div className="w-8 h-8 bg-blue-500 rounded flex items-center justify-center text-white font-bold"><i className="fa-solid fa-cube"></i></div><div><h2 className="font-bold text-white leading-tight">NLC ERP</h2><span className="text-[10px] text-slate-500">Cloud Edition</span></div></div>
+                        <div className="p-4 bg-slate-800/50 flex items-center gap-3 border-b border-slate-800"><div className="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center text-slate-400"><Icons.User/></div><div><div className="text-sm font-bold text-white">{currentUser.name}</div><div className="text-[10px] uppercase text-blue-400 font-bold tracking-wider">{currentUser.role}</div></div></div>
                         <nav className="flex-1 p-4 space-y-2">
                             <SidebarItem icon="Dashboard" label="ภาพรวม (Dashboard)" active={currentView==='dashboard'} onClick={()=>setCurrentView('dashboard')} />
                             <SidebarItem icon="Warehouse" label="คลังสินค้า (Inventory)" active={currentView==='inventory'} onClick={()=>setCurrentView('inventory')} />
                             <SidebarItem icon="Production" label="แผนผลิต (MRP/BOM)" active={currentView==='mrp'} onClick={()=>setCurrentView('mrp')} />
                             <SidebarItem icon="History" label="ประวัติ (History)" active={currentView==='history'} onClick={()=>setCurrentView('history')} />
-                            <div className="pt-4 mt-4 border-t border-slate-800">
-                                <SidebarItem icon="Settings" label="ตั้งค่า (Settings)" active={currentView==='settings'} onClick={()=>setCurrentView('settings')} />
-                            </div>
+                            <div className="pt-4 mt-4 border-t border-slate-800"><SidebarItem icon="Settings" label="ตั้งค่า (Settings)" active={currentView==='settings'} onClick={()=>setCurrentView('settings')} /></div>
                         </nav>
-                        <div className="p-4 bg-slate-800 text-[10px] text-center text-slate-500">
-                            {isLoading ? <div className="flex justify-center items-center gap-2 text-yellow-400"><div className="loader w-3 h-3"></div> Syncing...</div> : isCloud ? <span className="text-green-400"><Icons.Cloud/> Google Sheets Connected</span> : <span className="text-slate-400"><Icons.CloudOff/> Local Mode</span>}
-                        </div>
-                        <div className="p-4 border-t border-slate-800">
-                            <button onClick={()=>setCurrentUser(null)} className="w-full py-2 px-4 rounded bg-slate-800 text-xs font-bold hover:bg-red-900 hover:text-white transition flex items-center justify-center gap-2"><i className="fa-solid fa-power-off"></i> Logout</button>
-                        </div>
+                        <div className="p-4 bg-slate-800 text-[10px] text-center text-slate-500">{isBomSyncing ? <div className="flex justify-center items-center gap-2 text-yellow-400"><div className="loader w-3 h-3"></div> Syncing BOM...</div> : isCloud ? <span className="text-green-400"><Icons.Cloud/> BOM Synced</span> : <span className="text-slate-400"><Icons.CloudOff/> Local Mode</span>}</div>
+                        <div className="p-4 border-t border-slate-800"><button onClick={()=>setCurrentUser(null)} className="w-full py-2 px-4 rounded bg-slate-800 text-xs font-bold hover:bg-red-900 hover:text-white transition flex items-center justify-center gap-2"><i className="fa-solid fa-power-off"></i> Logout</button></div>
                     </aside>
 
-                    <div className="md:hidden fixed top-0 left-0 right-0 bg-slate-900 text-white p-4 z-30 flex justify-between items-center shadow-lg">
-                        <div className="font-bold flex items-center gap-2"><Icons.Warehouse/> NLC ERP</div>
-                        <button onClick={()=>setCurrentUser(null)} className="text-xs bg-slate-800 px-3 py-1 rounded">Logout</button>
-                    </div>
-
-                    <div className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t p-2 z-30 flex justify-around text-[10px] font-bold text-slate-500">
-                        <MobileNavItem icon="Dashboard" label="Home" active={currentView==='dashboard'} onClick={()=>setCurrentView('dashboard')} />
-                        <MobileNavItem icon="Warehouse" label="Stock" active={currentView==='inventory'} onClick={()=>setCurrentView('inventory')} />
-                        <MobileNavItem icon="Production" label="MRP" active={currentView==='mrp'} onClick={()=>setCurrentView('mrp')} />
-                        <MobileNavItem icon="Settings" label="Config" active={currentView==='settings'} onClick={()=>setCurrentView('settings')} />
-                    </div>
+                    <div className="md:hidden fixed top-0 left-0 right-0 bg-slate-900 text-white p-4 z-30 flex justify-between items-center shadow-lg"><div className="font-bold flex items-center gap-2"><Icons.Warehouse/> NLC ERP</div><button onClick={()=>setCurrentUser(null)} className="text-xs bg-slate-800 px-3 py-1 rounded">Logout</button></div>
+                    <div className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t p-2 z-30 flex justify-around text-[10px] font-bold text-slate-500"><MobileNavItem icon="Dashboard" label="Home" active={currentView==='dashboard'} onClick={()=>setCurrentView('dashboard')} /><MobileNavItem icon="Warehouse" label="Stock" active={currentView==='inventory'} onClick={()=>setCurrentView('inventory')} /><MobileNavItem icon="Production" label="MRP" active={currentView==='mrp'} onClick={()=>setCurrentView('mrp')} /><MobileNavItem icon="Settings" label="Config" active={currentView==='settings'} onClick={()=>setCurrentView('settings')} /></div>
 
                     <main className="flex-1 overflow-y-auto p-4 md:p-8 pt-20 md:pt-8 pb-20 md:pb-8 relative">
-                        {isLoading && <div className="absolute top-4 right-4 z-50 bg-black/70 text-white px-4 py-2 rounded-full text-xs flex items-center gap-2 animate-pulse"><div className="loader border-white w-3 h-3"></div> Saving to Cloud...</div>}
-                        
                         {currentView === 'dashboard' && <DashboardView inventory={inventory} transactions={transactions} toInventory={()=>setCurrentView('inventory')} />}
                         {currentView === 'inventory' && <InventoryView inventory={inventory} setInventory={setInventory} addTransaction={addTransaction} deleteItem={deleteItem} />}
-                        {currentView === 'mrp' && <AdvancedMRPView inventory={inventory} addTransaction={addTransaction} isCloud={isCloud} apiUrl={apiUrl} setIsLoading={setIsLoading} />}
+                        {currentView === 'mrp' && <AdvancedMRPView inventory={inventory} addTransaction={addTransaction} bomData={bomData} setBomData={setBomData} />}
                         {currentView === 'history' && <HistoryView transactions={transactions} />}
                         {currentView === 'settings' && <SettingsView apiUrl={apiUrl} setApiUrl={setApiUrl} setIsCloud={setIsCloud} setIsLoading={setIsLoading} users={users} onSaveUser={saveUser} onDeleteUser={deleteUser} currentUser={currentUser} />}
                     </main>
@@ -479,22 +383,12 @@
             );
         };
 
-        const SidebarItem = ({ icon, label, active, onClick }) => {
-            const Icon = Icons[icon];
-            return <button onClick={onClick} className={`w-full text-left px-4 py-3 rounded-xl flex items-center gap-3 text-sm font-medium sidebar-link ${active ? 'active' : 'hover:text-white hover:bg-slate-800'}`}><Icon className={active ? 'text-blue-400' : 'text-slate-500'} /> {label}</button>;
-        };
-
-        const MobileNavItem = ({ icon, label, active, onClick }) => {
-            const Icon = Icons[icon];
-            return <button onClick={onClick} className={`flex flex-col items-center gap-1 p-2 rounded-lg ${active ? 'text-blue-600 bg-blue-50' : ''}`}><Icon className="text-lg" /> <span>{label}</span></button>;
-        };
+        const SidebarItem = ({ icon, label, active, onClick }) => { const Icon = Icons[icon]; return <button onClick={onClick} className={`w-full text-left px-4 py-3 rounded-xl flex items-center gap-3 text-sm font-medium sidebar-link ${active ? 'active' : 'hover:text-white hover:bg-slate-800'}`}><Icon className={active ? 'text-blue-400' : 'text-slate-500'} /> {label}</button>; };
+        const MobileNavItem = ({ icon, label, active, onClick }) => { const Icon = Icons[icon]; return <button onClick={onClick} className={`flex flex-col items-center gap-1 p-2 rounded-lg ${active ? 'text-blue-600 bg-blue-50' : ''}`}><Icon className="text-lg" /> <span>{label}</span></button>; };
 
         // --- VIEWS ---
-
         const SettingsView = ({ apiUrl, setApiUrl, setIsCloud, setIsLoading, users, onSaveUser, onDeleteUser, currentUser }) => {
             const [urlInput, setUrlInput] = useState(apiUrl);
-            
-            // User Management State
             const [userForm, setUserForm] = useState({ id: null, username: '', password: '', name: '', role: 'STAFF' });
             const [showUserModal, setShowUserModal] = useState(false);
 
@@ -506,163 +400,47 @@
                 setIsCloud(!!cleanUrl);
                 if(cleanUrl) alert("บันทึก URL แล้ว! กรุณากดปุ่ม 'Initialize Database' เพื่อสร้างตาราง");
             };
-
             const handleInitialize = async () => {
                 if (currentUser.role !== 'ADMIN') return alert("Access Denied.");
                 if(!urlInput) return alert("กรุณาระบุ URL ก่อน");
                 if(!confirm("ต้องการสร้าง Sheet และหัวตารางอัตโนมัติใช่หรือไม่? (หากมีอยู่แล้วระบบจะไม่สร้างซ้ำ)")) return;
-                
                 setIsLoading(true);
-                try {
-                    await fetch(urlInput, {
-                        method: "POST",
-                        mode: "no-cors",
-                        headers: { "Content-Type": "text/plain" },
-                        body: JSON.stringify({ action: "initialize" })
-                    });
-                    alert("ส่งคำสั่งสร้างหัวตารางแล้ว! กรุณารอประมาณ 5 วินาที แล้วลองไปเช็คที่ Google Sheet");
-                } catch(e) {
-                    alert("Error: " + e.message);
-                } finally {
-                    setIsLoading(false);
-                }
+                try { await fetch(urlInput, { method: "POST", mode: "no-cors", headers: { "Content-Type": "text/plain" }, body: JSON.stringify({ action: "initialize" }) }); alert("ส่งคำสั่งสร้างหัวตารางแล้ว! กรุณารอประมาณ 5 วินาที แล้วลองไปเช็คที่ Google Sheet"); } catch(e) { alert("Error: " + e.message); } finally { setIsLoading(false); }
             };
-
-            // User Management Logic
             const openUserModal = (user = null) => {
                 if (currentUser.role !== 'ADMIN') return alert("Access Denied.");
-                if (user) {
-                    setUserForm({ ...user, password: '' }); // Don't show old password
-                } else {
-                    setUserForm({ id: null, username: '', password: '', name: '', role: 'STAFF' });
-                }
+                if (user) { setUserForm({ ...user, password: '' }); } else { setUserForm({ id: null, username: '', password: '', name: '', role: 'STAFF' }); }
                 setShowUserModal(true);
             };
-
             const handleUserSubmit = () => {
                 if (!userForm.username || !userForm.name) return alert("Please fill in Username and Name");
                 if (!userForm.id && !userForm.password) return alert("Password is required for new users");
-
                 let userToSave = { ...userForm };
-                // If editing and password blank, remove it so it doesn't overwrite
-                if (userToSave.id && !userToSave.password) {
-                    delete userToSave.password;
-                }
-                
+                if (userToSave.id && !userToSave.password) { delete userToSave.password; }
                 onSaveUser(userToSave);
                 setShowUserModal(false);
             };
-
             const handleDeleteUser = (id) => {
                 if (currentUser.role !== 'ADMIN') return alert("Access Denied.");
                 if (users.find(u => u.id === id).username === 'admin') return alert("Cannot delete default admin");
                 if (id === currentUser.id) return alert("Cannot delete yourself");
-                
-                if (confirm("Delete this user?")) {
-                    onDeleteUser(id);
-                }
+                if (confirm("Delete this user?")) { onDeleteUser(id); }
             };
-
             return (
                 <div className="animate-fade-in max-w-4xl mx-auto space-y-6">
                     <div className="bg-white p-8 rounded-2xl shadow-sm border">
                         <h2 className="text-2xl font-bold text-slate-800 mb-6 flex items-center gap-2"><Icons.Settings/> System Settings</h2>
-                        
                         <div className="mb-8">
                             <label className="block text-sm font-bold text-slate-700 mb-2">Google Apps Script Web App URL</label>
-                            <p className="text-xs text-slate-500 mb-2">วาง URL ที่ได้จากการ Deploy Google Apps Script ที่นี่</p>
-                            <div className="flex gap-2 mb-2">
-                                <input type="text" value={urlInput} onChange={e=>setUrlInput(e.target.value)} disabled={currentUser.role!=='ADMIN'} placeholder="https://script.google.com/macros/s/..../exec" className="flex-1 p-3 border rounded-xl text-sm focus:ring-2 focus:ring-blue-100 outline-none disabled:bg-slate-100"/>
-                                <button onClick={handleSaveUrl} disabled={currentUser.role!=='ADMIN'} className="bg-blue-600 text-white px-6 py-3 rounded-xl font-bold hover:bg-blue-700 disabled:opacity-50">Save</button>
-                            </div>
+                            <div className="flex gap-2 mb-2"><input type="text" value={urlInput} onChange={e=>setUrlInput(e.target.value)} disabled={currentUser.role!=='ADMIN'} placeholder="https://script.google.com/..." className="flex-1 p-3 border rounded-xl text-sm outline-none disabled:bg-slate-100"/><button onClick={handleSaveUrl} disabled={currentUser.role!=='ADMIN'} className="bg-blue-600 text-white px-6 py-3 rounded-xl font-bold hover:bg-blue-700 disabled:opacity-50">Save</button></div>
                             <button onClick={handleInitialize} disabled={currentUser.role!=='ADMIN'} className="w-full py-3 bg-purple-600 text-white font-bold rounded-xl hover:bg-purple-700 flex items-center justify-center gap-2 disabled:opacity-50"><Icons.Wand/> Initialize Database (สร้างหัวตารางอัตโนมัติ)</button>
                         </div>
-
-                        <div className="bg-blue-50 p-6 rounded-xl border border-blue-100">
-                            <h3 className="font-bold text-blue-800 mb-2">วิธีติดตั้ง (ฉบับอัปเดต)</h3>
-                            <ol className="list-decimal list-inside text-sm text-blue-800 space-y-2">
-                                <li>สร้าง Google Sheet ใหม่ (ไม่ต้องสร้าง Sheet ย่อย)</li>
-                                <li>ไปที่ Extensions {'>'} Apps Script และวางโค้ดใหม่ (ที่มีฟังก์ชัน initialize และ users)</li>
-                                <li>กด Deploy {'>'} New deployment {'>'} Select type: Web App</li>
-                                <li>Execute as: <b>Me</b>, Who has access: <b>Anyone</b></li>
-                                <li>Copy URL มาวางในช่องด้านบน แล้วกด <b>Save</b></li>
-                                <li>กดปุ่มสีม่วง <b>Initialize Database</b> เพื่อสร้างตารางอัตโนมัติ</li>
-                            </ol>
-                        </div>
                     </div>
-
                     <div className="bg-white p-8 rounded-2xl shadow-sm border">
-                        <div className="flex justify-between items-center mb-6">
-                            <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><Icons.Users/> User Accounts</h2>
-                            {currentUser.role === 'ADMIN' && (
-                                <button onClick={()=>openUserModal()} className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-bold shadow hover:bg-green-700 flex items-center gap-2"><Icons.Plus/> Add User</button>
-                            )}
-                        </div>
-                        
-                        <div className="overflow-x-auto">
-                            <table className="w-full text-sm text-left">
-                                <thead className="bg-slate-50 text-slate-500 uppercase font-bold text-xs">
-                                    <tr>
-                                        <th className="p-4">Username</th>
-                                        <th className="p-4">Name</th>
-                                        <th className="p-4">Role</th>
-                                        <th className="p-4 text-center">Action</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y divide-slate-100">
-                                    {users.map(u => (
-                                        <tr key={u.id} className="hover:bg-slate-50">
-                                            <td className="p-4 font-mono font-bold text-slate-700">{u.username}</td>
-                                            <td className="p-4 text-slate-600">{u.name}</td>
-                                            <td className="p-4"><span className={`px-2 py-1 rounded text-xs font-bold ${u.role==='ADMIN'?'bg-purple-100 text-purple-700':'bg-slate-100 text-slate-600'}`}>{u.role}</span></td>
-                                            <td className="p-4 text-center">
-                                                {currentUser.role === 'ADMIN' && (
-                                                    <div className="flex justify-center gap-2">
-                                                        <button onClick={()=>openUserModal(u)} className="p-1.5 bg-blue-100 text-blue-600 rounded hover:bg-blue-200"><Icons.Settings className="w-4 h-4"/></button>
-                                                        <button onClick={()=>handleDeleteUser(u.id)} disabled={u.username==='admin' || u.id===currentUser.id} className="p-1.5 bg-red-100 text-red-600 rounded hover:bg-red-200 disabled:opacity-30 disabled:cursor-not-allowed"><Icons.Trash className="w-4 h-4"/></button>
-                                                    </div>
-                                                )}
-                                            </td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                        </div>
-                        <div className="mt-4 text-xs text-slate-400 text-center">* User accounts are synced with Google Sheets.</div>
+                        <div className="flex justify-between items-center mb-6"><h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><Icons.Users/> User Accounts</h2>{currentUser.role === 'ADMIN' && (<button onClick={()=>openUserModal()} className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-bold shadow hover:bg-green-700 flex items-center gap-2"><Icons.Plus/> Add User</button>)}</div>
+                        <div className="overflow-x-auto"><table className="w-full text-sm text-left"><thead className="bg-slate-50 text-slate-500 uppercase font-bold text-xs"><tr><th className="p-4">Username</th><th className="p-4">Name</th><th className="p-4">Role</th><th className="p-4 text-center">Action</th></tr></thead><tbody className="divide-y divide-slate-100">{users.map(u => (<tr key={u.id} className="hover:bg-slate-50"><td className="p-4 font-mono font-bold text-slate-700">{u.username}</td><td className="p-4 text-slate-600">{u.name}</td><td className="p-4"><span className={`px-2 py-1 rounded text-xs font-bold ${u.role==='ADMIN'?'bg-purple-100 text-purple-700':'bg-slate-100 text-slate-600'}`}>{u.role}</span></td><td className="p-4 text-center">{currentUser.role === 'ADMIN' && (<div className="flex justify-center gap-2"><button onClick={()=>openUserModal(u)} className="p-1.5 bg-blue-100 text-blue-600 rounded hover:bg-blue-200"><Icons.Settings className="w-4 h-4"/></button><button onClick={()=>handleDeleteUser(u.id)} disabled={u.username==='admin' || u.id===currentUser.id} className="p-1.5 bg-red-100 text-red-600 rounded hover:bg-red-200 disabled:opacity-30 disabled:cursor-not-allowed"><Icons.Trash className="w-4 h-4"/></button></div>)}</td></tr>))}</tbody></table></div>
                     </div>
-
-                    {showUserModal && (
-                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 modal-overlay animate-fade-in" onClick={()=>setShowUserModal(false)}>
-                            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6" onClick={e=>e.stopPropagation()}>
-                                <h3 className="text-xl font-bold mb-4">{userForm.id ? 'Edit User' : 'Add New User'}</h3>
-                                <div className="space-y-4">
-                                    <div>
-                                        <label className="text-xs font-bold text-slate-500">Username</label>
-                                        <input type="text" value={userForm.username} onChange={e=>setUserForm({...userForm, username: e.target.value})} className="w-full p-3 border rounded-xl" disabled={!!userForm.id} />
-                                    </div>
-                                    <div>
-                                        <label className="text-xs font-bold text-slate-500">Display Name</label>
-                                        <input type="text" value={userForm.name} onChange={e=>setUserForm({...userForm, name: e.target.value})} className="w-full p-3 border rounded-xl" />
-                                    </div>
-                                    <div>
-                                        <label className="text-xs font-bold text-slate-500">Role</label>
-                                        <select value={userForm.role} onChange={e=>setUserForm({...userForm, role: e.target.value})} className="w-full p-3 border rounded-xl bg-white">
-                                            <option value="STAFF">Staff (View/Operate)</option>
-                                            <option value="ADMIN">Admin (Full Access)</option>
-                                        </select>
-                                    </div>
-                                    <div>
-                                        <label className="text-xs font-bold text-slate-500">Password {userForm.id && '(Leave blank to keep current)'}</label>
-                                        <input type="password" value={userForm.password} onChange={e=>setUserForm({...userForm, password: e.target.value})} className="w-full p-3 border rounded-xl" placeholder="••••" />
-                                    </div>
-                                    <div className="flex gap-3 pt-4">
-                                        <button onClick={()=>setShowUserModal(false)} className="flex-1 py-3 bg-slate-100 text-slate-500 font-bold rounded-xl hover:bg-slate-200">Cancel</button>
-                                        <button onClick={handleUserSubmit} className="flex-1 py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700">Save User</button>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    )}
+                    {showUserModal && (<div className="fixed inset-0 z-50 flex items-center justify-center p-4 modal-overlay animate-fade-in" onClick={()=>setShowUserModal(false)}><div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6" onClick={e=>e.stopPropagation()}><h3 className="text-xl font-bold mb-4">{userForm.id ? 'Edit User' : 'Add New User'}</h3><div className="space-y-4"><div><label className="text-xs font-bold text-slate-500">Username</label><input type="text" value={userForm.username} onChange={e=>setUserForm({...userForm, username: e.target.value})} className="w-full p-3 border rounded-xl" disabled={!!userForm.id} /></div><div><label className="text-xs font-bold text-slate-500">Display Name</label><input type="text" value={userForm.name} onChange={e=>setUserForm({...userForm, name: e.target.value})} className="w-full p-3 border rounded-xl" /></div><div><label className="text-xs font-bold text-slate-500">Role</label><select value={userForm.role} onChange={e=>setUserForm({...userForm, role: e.target.value})} className="w-full p-3 border rounded-xl bg-white"><option value="STAFF">Staff (View/Operate)</option><option value="ADMIN">Admin (Full Access)</option></select></div><div><label className="text-xs font-bold text-slate-500">Password {userForm.id && '(Leave blank to keep current)'}</label><input type="password" value={userForm.password} onChange={e=>setUserForm({...userForm, password: e.target.value})} className="w-full p-3 border rounded-xl" placeholder="••••" /></div><div className="flex gap-3 pt-4"><button onClick={()=>setShowUserModal(false)} className="flex-1 py-3 bg-slate-100 text-slate-500 font-bold rounded-xl hover:bg-slate-200">Cancel</button><button onClick={handleUserSubmit} className="flex-1 py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700">Save User</button></div></div></div></div>)}
                 </div>
             );
         };
@@ -672,214 +450,71 @@
             const totalQty = inventory.reduce((sum, i) => sum + i.qty, 0);
             return (
                 <div className="animate-fade-in max-w-5xl mx-auto space-y-6">
-                    <div className="flex justify-between items-end">
-                        <div><h2 className="text-2xl font-bold text-slate-800">Dashboard</h2><p className="text-slate-500">สรุปภาพรวมคลังสินค้า</p></div>
-                        <div className="text-right text-xs text-slate-400">ข้อมูล ณ: {new Date().toLocaleDateString()}</div>
-                    </div>
+                    <div className="flex justify-between items-end"><div><h2 className="text-2xl font-bold text-slate-800">Dashboard</h2><p className="text-slate-500">สรุปภาพรวมคลังสินค้า</p></div><div className="text-right text-xs text-slate-400">ข้อมูล ณ: {new Date().toLocaleDateString()}</div></div>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex items-center gap-4">
-                            <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center text-blue-600 text-xl"><Icons.Box/></div>
-                            <div><div className="text-2xl font-bold text-slate-800">{inventory.length}</div><div className="text-xs text-slate-500">รายการสินค้า (SKUs)</div></div>
-                        </div>
-                        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex items-center gap-4">
-                            <div className="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center text-green-600 text-xl"><Icons.Warehouse/></div>
-                            <div><div className="text-2xl font-bold text-slate-800">{formatNum(totalQty)}</div><div className="text-xs text-slate-500">จำนวนชิ้นรวมในคลัง</div></div>
-                        </div>
-                        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex items-center gap-4 cursor-pointer hover:border-red-300 transition" onClick={toInventory}>
-                            <div className={`w-12 h-12 rounded-full flex items-center justify-center text-xl ${lowStockItems.length>0 ? 'bg-red-100 text-red-600 animate-pulse' : 'bg-slate-100 text-slate-400'}`}><Icons.Warn/></div>
-                            <div><div className={`text-2xl font-bold ${lowStockItems.length>0 ? 'text-red-600' : 'text-slate-800'}`}>{lowStockItems.length}</div><div className="text-xs text-slate-500">สินค้าใกล้หมด (Low Stock)</div></div>
-                        </div>
+                        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex items-center gap-4"><div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center text-blue-600 text-xl"><Icons.Box/></div><div><div className="text-2xl font-bold text-slate-800">{inventory.length}</div><div className="text-xs text-slate-500">รายการสินค้า (SKUs)</div></div></div>
+                        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex items-center gap-4"><div className="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center text-green-600 text-xl"><Icons.Warehouse/></div><div><div className="text-2xl font-bold text-slate-800">{formatNum(totalQty)}</div><div className="text-xs text-slate-500">จำนวนชิ้นรวมในคลัง</div></div></div>
+                        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex items-center gap-4 cursor-pointer hover:border-red-300 transition" onClick={toInventory}><div className={`w-12 h-12 rounded-full flex items-center justify-center text-xl ${lowStockItems.length>0 ? 'bg-red-100 text-red-600 animate-pulse' : 'bg-slate-100 text-slate-400'}`}><Icons.Warn/></div><div><div className={`text-2xl font-bold ${lowStockItems.length>0 ? 'text-red-600' : 'text-slate-800'}`}>{lowStockItems.length}</div><div className="text-xs text-slate-500">สินค้าใกล้หมด (Low Stock)</div></div></div>
                     </div>
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-                            <h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2"><Icons.Warn className="text-red-500"/> รายการต้องสั่งซื้อเพิ่ม (Reorder Point)</h3>
-                            <div className="overflow-auto max-h-60">
-                                <table className="w-full text-sm">
-                                    <thead className="text-xs text-slate-400 border-b text-left"><tr><th className="pb-2">Part No</th><th className="pb-2 text-right">คงเหลือ</th><th className="pb-2 text-right">ขั้นต่ำ</th></tr></thead>
-                                    <tbody>
-                                        {lowStockItems.length===0 ? <tr><td colSpan="3" className="text-center py-4 text-slate-400">สินค้าเพียงพอ</td></tr> : lowStockItems.map(i => (
-                                            <tr key={i.partNo} className="border-b border-slate-50"><td className="py-2 text-blue-600 font-mono">{i.partNo}</td><td className="py-2 text-right font-bold text-red-500">{formatNum(i.qty)}</td><td className="py-2 text-right text-slate-400">{formatNum(i.minStock)}</td></tr>
-                                        ))}
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
-                        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-                            <h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2"><Icons.History className="text-blue-500"/> การเคลื่อนไหวล่าสุด</h3>
-                            <div className="space-y-3">
-                                {transactions.slice(0,5).map(tx => (
-                                    <div key={tx.id} className="flex justify-between items-center text-sm border-b border-slate-50 pb-2">
-                                        <div className="flex items-center gap-3"><div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold text-white ${tx.type==='IN'?'bg-green-500':tx.type==='OUT'?'bg-red-500':'bg-orange-400'}`}>{tx.type}</div><div><div className="font-mono text-slate-700 font-bold">{tx.partNo}</div><div className="text-[10px] text-slate-400">{new Date(tx.date).toLocaleString()}</div></div></div>
-                                        <div className="text-right"><div className="font-bold text-slate-700">{tx.type==='OUT'?'-':'+'}{formatNum(tx.qty)}</div></div>
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
+                        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200"><h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2"><Icons.Warn className="text-red-500"/> รายการต้องสั่งซื้อเพิ่ม (Reorder Point)</h3><div className="overflow-auto max-h-60"><table className="w-full text-sm"><thead className="text-xs text-slate-400 border-b text-left"><tr><th className="pb-2">Part No</th><th className="pb-2 text-right">คงเหลือ</th><th className="pb-2 text-right">ขั้นต่ำ</th></tr></thead><tbody>{lowStockItems.length===0 ? <tr><td colSpan="3" className="text-center py-4 text-slate-400">สินค้าเพียงพอ</td></tr> : lowStockItems.map(i => (<tr key={i.partNo} className="border-b border-slate-50"><td className="py-2 text-blue-600 font-mono">{i.partNo}</td><td className="py-2 text-right font-bold text-red-500">{formatNum(i.qty)}</td><td className="py-2 text-right text-slate-400">{formatNum(i.minStock)}</td></tr>))}</tbody></table></div></div>
+                        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200"><h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2"><Icons.History className="text-blue-500"/> การเคลื่อนไหวล่าสุด</h3><div className="space-y-3">{transactions.slice(0,5).map(tx => (<div key={tx.id} className="flex justify-between items-center text-sm border-b border-slate-50 pb-2"><div className="flex items-center gap-3"><div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold text-white ${tx.type==='IN'?'bg-green-500':tx.type==='OUT'?'bg-red-500':'bg-orange-400'}`}>{tx.type}</div><div><div className="font-mono text-slate-700 font-bold">{tx.partNo}</div><div className="text-[10px] text-slate-400">{new Date(tx.date).toLocaleString()}</div></div></div><div className="text-right"><div className="font-bold text-slate-700">{tx.type==='OUT'?'-':'+'}{formatNum(tx.qty)}</div></div></div>))}</div></div>
                     </div>
                 </div>
             );
         };
-
         const InventoryView = ({ inventory, setInventory, addTransaction, deleteItem }) => {
             const [search, setSearch] = useState("");
             const [modalMode, setModalMode] = useState(null);
             const [selectedItem, setSelectedItem] = useState(null);
             const [form, setForm] = useState({ partNo: "", name: "", qty: 0, location: "", minStock: 0, refDoc: "", note: "" });
-            
-            // Smart Search States
             const [suggestions, setSuggestions] = useState([]);
             const [showSuggestions, setShowSuggestions] = useState(false);
-
-            // Initial column widths
-            const [colWidths, setColWidths] = useState({
-                partNo: 150,
-                desc: 250,
-                loc: 80,
-                onHand: 100,
-                action: 150
-            });
+            const [colWidths, setColWidths] = useState({ partNo: 150, desc: 250, loc: 80, onHand: 100, action: 150 });
 
             const filteredInv = inventory.filter(i => {
                 const term = search.toLowerCase().trim();
                 if (!term) return true;
-                return String(i.partNo || "").toLowerCase().includes(term) || 
-                       String(i.name || "").toLowerCase().includes(term);
+                return String(i.partNo || "").toLowerCase().includes(term) || String(i.name || "").toLowerCase().includes(term);
             });
-            
             const openModal = (mode, item) => {
                 setModalMode(mode); setSelectedItem(item);
-                if (mode === 'ADD_NEW') {
-                    setForm({ partNo: "", name: "", qty: 0, location: "", minStock: 0 });
-                    setSuggestions([]);
-                }
+                if (mode === 'ADD_NEW') { setForm({ partNo: "", name: "", qty: 0, location: "", minStock: 0 }); setSuggestions([]); }
                 else setForm({ ...form, qty: 0, refDoc: "", note: "" });
             };
-            
-            const handleDeleteClick = (item) => {
-                openModal('DELETE', item);
-            };
-
-            // Smart Input Handlers
+            const handleDeleteClick = (item) => { openModal('DELETE', item); };
             const handlePartNoChange = (e) => {
-                const val = e.target.value;
-                setForm({ ...form, partNo: val });
-                
+                const val = e.target.value; setForm({ ...form, partNo: val });
                 if (val && modalMode === 'ADD_NEW') {
                     const matches = inventory.filter(i => {
                         const term = val.toLowerCase().trim();
-                        return String(i.partNo || "").toLowerCase().includes(term) || 
-                               String(i.name || "").toLowerCase().includes(term);
+                        return String(i.partNo || "").toLowerCase().includes(term) || String(i.name || "").toLowerCase().includes(term);
                     });
-                    setSuggestions(matches.slice(0, 5));
-                    setShowSuggestions(true);
-                } else {
-                    setShowSuggestions(false);
-                }
+                    setSuggestions(matches.slice(0, 5)); setShowSuggestions(true);
+                } else { setShowSuggestions(false); }
             };
-
             const handleSelectSuggestion = (item) => {
-                setForm({
-                    ...form,
-                    partNo: item.partNo,
-                    name: item.name,
-                    location: item.location,
-                    minStock: item.minStock,
-                    qty: 0 // Reset qty
-                });
-                setShowSuggestions(false);
+                setForm({ ...form, partNo: item.partNo, name: item.name, location: item.location, minStock: item.minStock, qty: 0 }); setShowSuggestions(false);
             };
-
             const handleSubmit = () => {
                 if (modalMode === 'ADD_NEW') {
-                    // Smart Check: Duplicate
                     const existingItem = inventory.find(i => i.partNo === form.partNo);
-                    if (existingItem) {
-                        if (confirm(`พบสินค้า "${form.partNo}" ในระบบแล้ว!\nต้องการ "รับเข้า (IN)" เพิ่มจำนวน ${form.qty} ชิ้น แทนการสร้างใหม่หรือไม่?`)) {
-                            addTransaction('IN', form.partNo, form.qty, 'ADD_EXISTING', 'Added via New Item form');
-                            setModalMode(null);
-                            return;
-                        } else {
-                            return; // User cancelled
-                        }
-                    }
-
-                    // Original logic
-                    // Pass newItemData for Cloud Sync
-                    addTransaction('INIT', form.partNo, form.qty, 'INIT', 'Initial Stock', {
-                        partNo: form.partNo, name: form.name, qty: form.qty, location: form.location, minStock: form.minStock
-                    });
+                    if (existingItem) { if (confirm(`พบสินค้า "${form.partNo}" ในระบบแล้ว!\nต้องการ "รับเข้า (IN)" เพิ่มจำนวน ${form.qty} ชิ้น แทนการสร้างใหม่หรือไม่?`)) { addTransaction('IN', form.partNo, form.qty, 'ADD_EXISTING', 'Added via New Item form'); setModalMode(null); return; } else { return; } }
+                    addTransaction('INIT', form.partNo, form.qty, 'INIT', 'Initial Stock', { partNo: form.partNo, name: form.name, qty: form.qty, location: form.location, minStock: form.minStock });
                 } else if (modalMode === 'IN' || modalMode === 'OUT') {
                     if (modalMode === 'OUT' && selectedItem.qty < form.qty) return alert("ของไม่พอ");
                     addTransaction(modalMode, selectedItem.partNo, form.qty, form.refDoc, form.note);
-                } else if (modalMode === 'DELETE') {
-                    deleteItem(selectedItem.partNo);
-                }
+                } else if (modalMode === 'DELETE') { deleteItem(selectedItem.partNo); }
                 setModalMode(null);
             };
-            
-            const handleExport = () => {
-                const data = inventory.map(i => ({
-                    "Part No": i.partNo,
-                    "Description": i.name,
-                    "Location": i.location,
-                    "Quantity": i.qty,
-                    "Unit": i.unit,
-                    "Min Stock": i.minStock,
-                    "Status": i.qty <= i.minStock ? "Low Stock" : "OK"
-                }));
-                exportToExcel(data, "Inventory_Report");
-            };
-
+            const handleExport = () => { const data = inventory.map(i => ({ "Part No": i.partNo, "Description": i.name, "Location": i.location, "Quantity": i.qty, "Unit": i.unit, "Min Stock": i.minStock, "Status": i.qty <= i.minStock ? "Low Stock" : "OK" })); exportToExcel(data, "Inventory_Report"); };
             return (
                 <div className="animate-fade-in max-w-6xl mx-auto h-full flex flex-col">
-                    <div className="flex justify-between items-center mb-6">
-                        <h2 className="text-2xl font-bold text-slate-800">Inventory</h2>
-                        <div className="flex gap-2">
-                             <input type="text" placeholder="Part No / Name..." value={search} onChange={e=>setSearch(e.target.value)} className="pl-4 py-2 border rounded-lg text-sm outline-none w-32 md:w-auto"/>
-                             <button onClick={handleExport} className="bg-emerald-600 text-white px-3 py-2 rounded-lg text-sm font-bold shadow-md hover:bg-emerald-700 whitespace-nowrap"><Icons.Download/> <span className="hidden md:inline">Export</span></button>
-                             <button onClick={()=>openModal('ADD_NEW')} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-bold shadow-md hover:bg-blue-700 whitespace-nowrap"><Icons.Plus/> <span className="hidden md:inline">New Item</span></button>
-                        </div>
-                    </div>
+                    <div className="flex justify-between items-center mb-6"><h2 className="text-2xl font-bold text-slate-800">Inventory</h2><div className="flex gap-2"><input type="text" placeholder="Part No / Name..." value={search} onChange={e=>setSearch(e.target.value)} className="pl-4 py-2 border rounded-lg text-sm outline-none w-32 md:w-auto"/><button onClick={handleExport} className="bg-emerald-600 text-white px-3 py-2 rounded-lg text-sm font-bold shadow-md hover:bg-emerald-700 whitespace-nowrap"><Icons.Download/> <span className="hidden md:inline">Export</span></button><button onClick={()=>openModal('ADD_NEW')} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-bold shadow-md hover:bg-blue-700 whitespace-nowrap"><Icons.Plus/> <span className="hidden md:inline">New Item</span></button></div></div>
                     <div className="flex-1 bg-white rounded-2xl shadow-sm border overflow-hidden flex flex-col">
-                        <div className="overflow-auto max-h-[calc(100vh-200px)] relative">
-                            <table className="w-max text-sm text-left border-collapse whitespace-nowrap">
-                                <thead className="bg-slate-50 text-slate-500 uppercase font-bold text-xs sticky top-0 z-20 shadow-sm">
-                                    <tr>
-                                        <ResizableTh width={colWidths.partNo} onResize={w => setColWidths({...colWidths, partNo: w})} className="p-4">Part No</ResizableTh>
-                                        <ResizableTh width={colWidths.desc} onResize={w => setColWidths({...colWidths, desc: w})} className="p-4">Description</ResizableTh>
-                                        <ResizableTh width={colWidths.loc} onResize={w => setColWidths({...colWidths, loc: w})} className="p-4 text-center">Loc</ResizableTh>
-                                        <ResizableTh width={colWidths.onHand} onResize={w => setColWidths({...colWidths, onHand: w})} className="p-4 text-right">On Hand</ResizableTh>
-                                        <ResizableTh width={colWidths.action} onResize={w => setColWidths({...colWidths, action: w})} className="p-4 text-center">Action</ResizableTh>
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y divide-slate-100">
-                                    {filteredInv.length > 0 ? (
-                                        filteredInv.map(item => (
-                                            <tr key={item.partNo} className="hover:bg-slate-50">
-                                                <td className="p-4 font-mono font-bold text-blue-700 align-top break-words">{item.partNo}</td>
-                                                <td className="p-4 whitespace-normal align-top text-slate-600 break-words min-w-[200px]">{item.name}</td>
-                                                <td className="p-4 text-center align-top"><span className="bg-slate-100 px-2 py-1 rounded text-xs">{item.location}</span></td>
-                                                <td className="p-4 text-right align-top">
-                                                    <div className={`font-bold ${item.qty<=item.minStock?'text-red-600':'text-slate-800'}`}>{formatNum(item.qty)}</div>
-                                                </td>
-                                                <td className="p-4 text-center flex justify-center gap-2 align-top">
-                                                    <button onClick={()=>openModal('IN', item)} className="p-1.5 bg-green-100 text-green-600 rounded hover:bg-green-200" title="รับเข้า"><Icons.Plus/></button>
-                                                    <button onClick={()=>openModal('OUT', item)} className="p-1.5 bg-red-100 text-red-600 rounded hover:bg-red-200" title="เบิกออก"><Icons.Minus/></button>
-                                                    <button onClick={()=>handleDeleteClick(item)} className="p-1.5 bg-slate-100 text-slate-500 rounded hover:bg-slate-200 hover:text-red-500" title="ลบรายการ"><Icons.Trash/></button>
-                                                </td>
-                                            </tr>
-                                        ))
-                                    ) : (
-                                        <tr>
-                                            <td colSpan="5" className="p-8 text-center text-slate-400">
-                                                <i className="fa-solid fa-box-open text-2xl mb-2"></i>
-                                                <div>ไม่พบรายการสินค้าที่ค้นหา</div>
-                                            </td>
-                                        </tr>
-                                    )}
-                                </tbody>
-                            </table>
-                        </div>
+                        <div className="overflow-auto max-h-[calc(100vh-200px)] relative"><table className="w-max text-sm text-left border-collapse whitespace-nowrap"><thead className="bg-slate-50 text-slate-500 uppercase font-bold text-xs sticky top-0 z-20 shadow-sm"><tr><ResizableTh width={colWidths.partNo} onResize={w => setColWidths({...colWidths, partNo: w})} className="p-4">Part No</ResizableTh><ResizableTh width={colWidths.desc} onResize={w => setColWidths({...colWidths, desc: w})} className="p-4">Description</ResizableTh><ResizableTh width={colWidths.loc} onResize={w => setColWidths({...colWidths, loc: w})} className="p-4 text-center">Loc</ResizableTh><ResizableTh width={colWidths.onHand} onResize={w => setColWidths({...colWidths, onHand: w})} className="p-4 text-right">On Hand</ResizableTh><ResizableTh width={colWidths.action} onResize={w => setColWidths({...colWidths, action: w})} className="p-4 text-center">Action</ResizableTh></tr></thead><tbody className="divide-y divide-slate-100">
+                            {filteredInv.length > 0 ? (filteredInv.map(item => (<tr key={item.partNo} className="hover:bg-slate-50"><td className="p-4 font-mono font-bold text-blue-700 align-top break-words">{item.partNo}</td><td className="p-4 whitespace-normal align-top text-slate-600 break-words min-w-[200px]">{item.name}</td><td className="p-4 text-center align-top"><span className="bg-slate-100 px-2 py-1 rounded text-xs">{item.location}</span></td><td className="p-4 text-right align-top"><div className={`font-bold ${item.qty<=item.minStock?'text-red-600':'text-slate-800'}`}>{formatNum(item.qty)}</div></td><td className="p-4 text-center flex justify-center gap-2 align-top"><button onClick={()=>openModal('IN', item)} className="p-1.5 bg-green-100 text-green-600 rounded hover:bg-green-200" title="รับเข้า"><Icons.Plus/></button><button onClick={()=>openModal('OUT', item)} className="p-1.5 bg-red-100 text-red-600 rounded hover:bg-red-200" title="เบิกออก"><Icons.Minus/></button><button onClick={()=>handleDeleteClick(item)} className="p-1.5 bg-slate-100 text-slate-500 rounded hover:bg-slate-200 hover:text-red-500" title="ลบรายการ"><Icons.Trash/></button></td></tr>))) : (<tr><td colSpan="5" className="p-8 text-center text-slate-400"><i className="fa-solid fa-box-open text-2xl mb-2"></i><div>ไม่พบรายการสินค้าที่ค้นหา</div></td></tr>)}
+                        </tbody></table></div>
                     </div>
                     {modalMode && (
                         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 modal-overlay" onClick={()=>setModalMode(null)}>
@@ -890,69 +525,9 @@
                                     {modalMode==='OUT' && <><Icons.Minus className="text-red-500"/> เบิกสินค้าออก (Out)</>}
                                     {modalMode==='DELETE' && <><Icons.Trash className="text-red-500"/> ลบรายการสินค้า</>}
                                 </h3>
-                                
                                 <div className="space-y-4">
-                                    {modalMode==='DELETE' ? (
-                                        <div className="text-center py-4">
-                                            <div className="text-red-500 text-4xl mb-2"><i className="fa-solid fa-triangle-exclamation"></i></div>
-                                            <p className="font-bold text-slate-800">ยืนยันการลบรายการนี้?</p>
-                                            <div className="bg-red-50 p-2 rounded mt-2 border border-red-100">
-                                                <div className="font-mono text-red-700 font-bold">{selectedItem.partNo}</div>
-                                                <div className="text-xs text-red-600">{selectedItem.name}</div>
-                                            </div>
-                                            <p className="text-xs text-slate-400 mt-2">* ข้อมูลจะถูกลบถาวรทั้งในเครื่องและบน Cloud</p>
-                                        </div>
-                                    ) : (
-                                        modalMode==='ADD_NEW' ? 
-                                        <>
-                                            <div className="relative">
-                                                <label className="text-xs font-bold text-slate-500">Part No / Name</label>
-                                                <input 
-                                                    className="w-full p-2 border rounded" 
-                                                    placeholder="Part No / Name..." 
-                                                    value={form.partNo} 
-                                                    onChange={handlePartNoChange}
-                                                    onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
-                                                    autoComplete="off"
-                                                />
-                                                {showSuggestions && suggestions.length > 0 && (
-                                                    <ul className="absolute z-10 w-full bg-white border border-gray-300 rounded-b shadow-lg max-h-40 overflow-y-auto mt-1">
-                                                        {suggestions.map(s => (
-                                                            <li key={s.partNo} 
-                                                                className="p-2 hover:bg-blue-50 cursor-pointer border-b text-sm flex justify-between items-center"
-                                                                onMouseDown={() => handleSelectSuggestion(s)}
-                                                            >
-                                                                <div>
-                                                                    <div className="font-bold text-blue-600">{s.partNo}</div>
-                                                                    <div className="text-xs text-gray-500 truncate w-40">{s.name}</div>
-                                                                </div>
-                                                                <div className="text-xs bg-slate-100 px-2 py-1 rounded">Stock: {formatNum(s.qty)}</div>
-                                                            </li>
-                                                        ))}
-                                                    </ul>
-                                                )}
-                                            </div>
-                                            <div><label className="text-xs font-bold text-slate-500">Description</label><input className="w-full p-2 border rounded" placeholder="Name" value={form.name} onChange={e=>setForm({...form, name: e.target.value})}/></div>
-                                            <div className="flex gap-2">
-                                                <div className="flex-1"><label className="text-xs font-bold text-slate-500">Location</label><input className="w-full p-2 border rounded" placeholder="Loc" value={form.location} onChange={e=>setForm({...form, location: e.target.value})}/></div>
-                                                <div className="flex-1"><label className="text-xs font-bold text-slate-500">Min Stock</label><input type="number" className="w-full p-2 border rounded" placeholder="Min" value={form.minStock} onChange={e=>setForm({...form, minStock: parseFloat(e.target.value)})}/></div>
-                                            </div>
-                                            <div><label className="text-xs font-bold text-slate-500">Initial Qty</label><input type="number" className="w-full p-2 border rounded" placeholder="Initial Qty" value={form.qty} onChange={e=>setForm({...form, qty: parseFloat(e.target.value)})}/></div>
-                                        </> 
-                                        : 
-                                        <>
-                                            <div className="text-sm mb-2 font-bold text-slate-500">{selectedItem.partNo} ({formatNum(selectedItem.qty)})</div>
-                                            <input type="number" autoFocus className="w-full p-3 border-2 border-blue-100 rounded-xl text-center text-xl font-bold text-blue-700 outline-none" placeholder="Qty" value={form.qty||''} onChange={e=>setForm({...form, qty: parseFloat(e.target.value)})}/>
-                                            <input className="w-full p-2 border rounded" placeholder="Ref Doc" value={form.refDoc} onChange={e=>setForm({...form, refDoc: e.target.value})}/>
-                                        </>
-                                    )}
-                                    
-                                    <div className="flex gap-3 pt-2">
-                                        <button onClick={()=>setModalMode(null)} className="flex-1 py-2.5 bg-slate-100 text-slate-500 font-bold rounded-xl hover:bg-slate-200">Cancel</button>
-                                        <button onClick={handleSubmit} className={`flex-1 py-2.5 text-white font-bold rounded-xl shadow-md ${modalMode==='DELETE'?'bg-red-600 hover:bg-red-700':'bg-blue-600 hover:bg-blue-700'}`}>
-                                            {modalMode==='DELETE' ? 'Delete' : 'Confirm'}
-                                        </button>
-                                    </div>
+                                    {modalMode==='DELETE' ? (<div className="text-center py-4"><div className="text-red-500 text-4xl mb-2"><i className="fa-solid fa-triangle-exclamation"></i></div><p className="font-bold text-slate-800">ยืนยันการลบรายการนี้?</p><div className="bg-red-50 p-2 rounded mt-2 border border-red-100"><div className="font-mono text-red-700 font-bold">{selectedItem.partNo}</div><div className="text-xs text-red-600">{selectedItem.name}</div></div><p className="text-xs text-slate-400 mt-2">* ข้อมูลจะถูกลบถาวรทั้งในเครื่องและบน Cloud</p></div>) : (modalMode==='ADD_NEW' ? <><div className="relative"><label className="text-xs font-bold text-slate-500">Part No / Name</label><input className="w-full p-2 border rounded" placeholder="Part No / Name..." value={form.partNo} onChange={handlePartNoChange} onBlur={() => setTimeout(() => setShowSuggestions(false), 200)} autoComplete="off"/>{showSuggestions && suggestions.length > 0 && (<ul className="absolute z-10 w-full bg-white border border-gray-300 rounded-b shadow-lg max-h-40 overflow-y-auto mt-1">{suggestions.map(s => (<li key={s.partNo} className="p-2 hover:bg-blue-50 cursor-pointer border-b text-sm flex justify-between items-center" onMouseDown={() => handleSelectSuggestion(s)}><div><div className="font-bold text-blue-600">{s.partNo}</div><div className="text-xs text-gray-500 truncate w-40">{s.name}</div></div><div className="text-xs bg-slate-100 px-2 py-1 rounded">Stock: {formatNum(s.qty)}</div></li>))}</ul>)}</div><div><label className="text-xs font-bold text-slate-500">Description</label><input className="w-full p-2 border rounded" placeholder="Name" value={form.name} onChange={e=>setForm({...form, name: e.target.value})}/></div><div className="flex gap-2"><div className="flex-1"><label className="text-xs font-bold text-slate-500">Location</label><input className="w-full p-2 border rounded" placeholder="Loc" value={form.location} onChange={e=>setForm({...form, location: e.target.value})}/></div><div className="flex-1"><label className="text-xs font-bold text-slate-500">Min Stock</label><input type="number" className="w-full p-2 border rounded" placeholder="Min" value={form.minStock} onChange={e=>setForm({...form, minStock: parseFloat(e.target.value)})}/></div></div><div><label className="text-xs font-bold text-slate-500">Initial Qty</label><input type="number" className="w-full p-2 border rounded" placeholder="Initial Qty" value={form.qty} onChange={e=>setForm({...form, qty: parseFloat(e.target.value)})}/></div></> : <><div className="text-sm mb-2 font-bold text-slate-500">{selectedItem.partNo} ({formatNum(selectedItem.qty)})</div><input type="number" autoFocus className="w-full p-3 border-2 border-blue-100 rounded-xl text-center text-xl font-bold text-blue-700 outline-none" placeholder="Qty" value={form.qty||''} onChange={e=>setForm({...form, qty: parseFloat(e.target.value)})}/><input className="w-full p-2 border rounded" placeholder="Ref Doc" value={form.refDoc} onChange={e=>setForm({...form, refDoc: e.target.value})}/></>)}
+                                    <div className="flex gap-3 pt-2"><button onClick={()=>setModalMode(null)} className="flex-1 py-2.5 bg-slate-100 text-slate-500 font-bold rounded-xl hover:bg-slate-200">Cancel</button><button onClick={handleSubmit} className={`flex-1 py-2.5 text-white font-bold rounded-xl shadow-md ${modalMode==='DELETE'?'bg-red-600 hover:bg-red-700':'bg-blue-600 hover:bg-blue-700'}`}>{modalMode==='DELETE' ? 'Delete' : 'Confirm'}</button></div>
                                 </div>
                             </div>
                         </div>
@@ -961,16 +536,16 @@
             );
         };
 
+        // ... AdvancedMRPView and HistoryView remain same (Auto-loaded/Configured) ...
         const AdvancedMRPView = ({ inventory, addTransaction, isCloud, apiUrl, setIsLoading }) => {
             const [step, setStep] = useState(1);
             const [allSheets, setAllSheets] = useState({});
             const [sheetNames, setSheetNames] = useState([]);
             const [currentPreviewSheet, setCurrentPreviewSheet] = useState("");
-            const [mode, setMode] = useState('plan'); // 'plan' or 'compare'
+            const [mode, setMode] = useState('plan'); 
             const [hasAutoLoaded, setHasAutoLoaded] = useState(false);
             const [isBomLoading, setIsBomLoading] = useState(false);
             
-            // Config State
             const [headerRowIndex, setHeaderRowIndex] = useState(-1);
             const [partNoCol, setPartNoCol] = useState(-1);
             const [partNameCol, setPartNameCol] = useState(-1);
@@ -978,38 +553,22 @@
             const [qtyCol, setQtyCol] = useState(-1);
             const [reuseCol, setReuseCol] = useState(-1);
             
-            // Dynamic column widths for BOM Config Table
             const [bomColWidths, setBomColWidths] = useState({});
-
             const [orders, setOrders] = useState([]);
             const [orderText, setOrderText] = useState("");
             
-            // Result State
             const [showConfirmModal, setShowConfirmModal] = useState(false);
             const [matchCandidates, setMatchCandidates] = useState([]);
             const [finalSummary, setFinalSummary] = useState(null);
-            
-            // Breakdown Modal State
             const [breakdownItem, setBreakdownItem] = useState(null);
 
-            // Compare State (Multi-model support)
-            const [compareList, setCompareList] = useState(["", ""]); // Init with 2 slots
+            const [compareList, setCompareList] = useState(["", ""]);
             const [compResult, setCompResult] = useState(null);
             
-            // Column Widths for Result
-            const [colWidths, setColWidths] = useState({
-                id: 50, partNo: 150, partName: 250, lvl: 60, req: 100, oh: 100, diff: 100, status: 120, reuse: 80
-            });
-            
-            // Column Widths for Compare
-            const [compColWidths, setCompColWidths] = useState({
-                partNo: 150, desc: 250, model: 100, status: 100
-            });
-
-            // Sorting State
+            const [colWidths, setColWidths] = useState({ id: 50, partNo: 150, partName: 250, lvl: 60, req: 100, oh: 100, diff: 100, status: 120, reuse: 80 });
+            const [compColWidths, setCompColWidths] = useState({ partNo: 150, desc: 250, model: 100, status: 100 });
             const [sortConfig, setSortConfig] = useState({ key: null, direction: 'asc' });
 
-            // Auto-load BOM from Cloud when component mounts
             useEffect(() => {
                 if (isCloud && apiUrl && sheetNames.length === 0 && !hasAutoLoaded) {
                     setHasAutoLoaded(true);
@@ -1017,7 +576,6 @@
                 }
             }, [isCloud, apiUrl]);
 
-            // --- Helpers ---
             const parseLvl = (val) => { 
                 if (val === undefined || val === null) return "-"; 
                 const str = String(val).trim(); 
@@ -1025,673 +583,171 @@
                 return numMatch ? parseInt(numMatch[0], 10) : "-"; 
             };
             
-            // --- Helper: Detect Columns ---
             const detectColumns = (sheetsData, firstSheetName) => {
                 const firstData = sheetsData[firstSheetName];
                 if (!firstData) return;
-                
-                // Try to find header row by looking for 'Part' keyword
                 let hIdx = firstData.findIndex(row => row.some(cell => String(cell).toLowerCase().includes('part')));
-                if (hIdx === -1) hIdx = 0; // Default to 0 if not found
-                
+                if (hIdx === -1) hIdx = 0; 
                 setHeaderRowIndex(hIdx);
-
-                // Set Default Fixed Columns (Requested)
-                setLevelCol(0);  // Lvl
-                setPartNoCol(1); // P#
-                setQtyCol(3);    // Qty
-                setReuseCol(5);  // Type
-                
-                // Try to auto-detect Description (usually Col 2)
-                let nameIdx = 2; // Default
+                setLevelCol(0); setPartNoCol(1); setQtyCol(3); setReuseCol(5);
+                let nameIdx = 2;
                 if (firstData[hIdx]) {
                      firstData[hIdx].forEach((cell, i) => {
                         const c = String(cell).toLowerCase();
-                        // If we find 'desc' or 'name' and it's not one of the fixed cols
-                        if ((c.includes('desc') || c.includes('name')) && ![0,1,3,5].includes(i)) {
-                            nameIdx = i;
-                        }
+                        if ((c.includes('desc') || c.includes('name')) && ![0,1,3,5].includes(i)) { nameIdx = i; }
                     });
                 }
                 setPartNameCol(nameIdx);
             };
 
-            // --- Fuzzy Logic Helpers ---
-            const levenshtein = (a, b) => {
-                if (a.length === 0) return b.length; if (b.length === 0) return a.length;
-                const matrix = []; for (let i = 0; i <= b.length; i++) matrix[i] = [i]; for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
-                for (let i = 1; i <= b.length; i++) { for (let j = 1; j <= a.length; j++) {
-                    if (b.charAt(i - 1) === a.charAt(j - 1)) { matrix[i][j] = matrix[i - 1][j - 1]; } 
-                    else { matrix[i][j] = Math.min(matrix[i - 1][j - 1] + 1, Math.min(matrix[i][j - 1] + 1, matrix[i - 1][j] + 1)); }
-                }} return matrix[b.length][a.length];
-            };
-            const getSimilarity = (s1, s2) => {
-                const longer = s1.length > s2.length ? s1 : s2; const shorter = s1.length > s2.length ? s2 : s1;
-                if (longer.length === 0) return 1.0; return (longer.length - levenshtein(longer, shorter)) / longer.length;
-            };
+            // Fuzzy helpers (levenshtein, getSimilarity, tokenize, calculateFuzzyScore, findSmartMatch) ...
+            const levenshtein = (a, b) => { if (a.length === 0) return b.length; if (b.length === 0) return a.length; const matrix = []; for (let i = 0; i <= b.length; i++) matrix[i] = [i]; for (let j = 0; j <= a.length; j++) matrix[0][j] = j; for (let i = 1; i <= b.length; i++) { for (let j = 1; j <= a.length; j++) { if (b.charAt(i - 1) === a.charAt(j - 1)) { matrix[i][j] = matrix[i - 1][j - 1]; } else { matrix[i][j] = Math.min(matrix[i - 1][j - 1] + 1, Math.min(matrix[i][j - 1] + 1, matrix[i - 1][j] + 1)); } }} return matrix[b.length][a.length]; };
+            const getSimilarity = (s1, s2) => { const longer = s1.length > s2.length ? s1 : s2; const shorter = s1.length > s2.length ? s2 : s1; if (longer.length === 0) return 1.0; return (longer.length - levenshtein(longer, shorter)) / longer.length; };
             const tokenize = (str) => { if (!str) return []; return str.toUpperCase().replace(/[^A-Z0-9]/g, ' ').match(/[A-Z]+|[0-9]+/g) || []; };
-            const calculateFuzzyScore = (inputTokens, targetTokens) => {
-                if (inputTokens.length === 0 || targetTokens.length === 0) return 0;
-                let totalMaxSim = 0; const matches = []; 
-                inputTokens.forEach(inToken => {
-                    let maxSim = 0; let bestMatchToken = null;
-                    targetTokens.forEach(targetToken => { const sim = getSimilarity(inToken, targetToken); if (sim > maxSim) { maxSim = sim; bestMatchToken = targetToken; } });
-                    if(bestMatchToken) { const inIsNum = !isNaN(inToken); const tarIsNum = !isNaN(bestMatchToken); if(inIsNum !== tarIsNum) maxSim *= 0.5; }
-                    totalMaxSim += maxSim; matches.push({ token: inToken, match: bestMatchToken, similarity: maxSim });
-                });
-                const score = totalMaxSim / inputTokens.length;
-                const lengthRatio = Math.min(inputTokens.length, targetTokens.length) / Math.max(inputTokens.length, targetTokens.length);
-                return { score: score * 0.9 + lengthRatio * 0.1, matches };
-            };
-            const findSmartMatch = (inputModel, sheets) => {
-                const input = inputModel.trim().toUpperCase(); const inputTokens = tokenize(input);
-                const candidates = sheets.map(name => {
-                    const targetTokens = tokenize(name); const { score, matches } = calculateFuzzyScore(inputTokens, targetTokens);
-                    return { name, score, targetTokens, matches };
-                });
-                const goodCandidates = candidates.filter(c => c.score > 0.4).sort((a, b) => b.score - a.score);
-                const best = goodCandidates.length > 0 ? goodCandidates[0] : null;
-                return { name: best ? best.name : null, score: best ? best.score : 0, tokens: inputTokens, matches: best ? best.matches : [], candidates: goodCandidates.slice(0, 5) };
-            };
+            const calculateFuzzyScore = (inputTokens, targetTokens) => { if (inputTokens.length === 0 || targetTokens.length === 0) return 0; let totalMaxSim = 0; const matches = []; inputTokens.forEach(inToken => { let maxSim = 0; let bestMatchToken = null; targetTokens.forEach(targetToken => { const sim = getSimilarity(inToken, targetToken); if (sim > maxSim) { maxSim = sim; bestMatchToken = targetToken; } }); if(bestMatchToken) { const inIsNum = !isNaN(inToken); const tarIsNum = !isNaN(bestMatchToken); if(inIsNum !== tarIsNum) maxSim *= 0.5; } totalMaxSim += maxSim; matches.push({ token: inToken, match: bestMatchToken, similarity: maxSim }); }); const score = totalMaxSim / inputTokens.length; const lengthRatio = Math.min(inputTokens.length, targetTokens.length) / Math.max(inputTokens.length, targetTokens.length); return { score: score * 0.9 + lengthRatio * 0.1, matches }; };
+            const findSmartMatch = (inputModel, sheets) => { const input = inputModel.trim().toUpperCase(); const inputTokens = tokenize(input); const candidates = sheets.map(name => { const targetTokens = tokenize(name); const { score, matches } = calculateFuzzyScore(inputTokens, targetTokens); return { name, score, targetTokens, matches }; }); const goodCandidates = candidates.filter(c => c.score > 0.4).sort((a, b) => b.score - a.score); const best = goodCandidates.length > 0 ? goodCandidates[0] : null; return { name: best ? best.name : null, score: best ? best.score : 0, tokens: inputTokens, matches: best ? best.matches : [], candidates: goodCandidates.slice(0, 5) }; };
 
-            const handleFileUpload = (e) => {
-                const file = e.target.files[0]; if (!file) return;
-                const reader = new FileReader();
-                reader.onload = (evt) => {
-                    const workbook = XLSX.read(new Uint8Array(evt.target.result), { type: 'array' });
-                    const sheetsData = {}; workbook.SheetNames.forEach(name => { sheetsData[name] = XLSX.utils.sheet_to_json(workbook.Sheets[name], { header: 1 }); });
-                    setAllSheets(sheetsData); setSheetNames(workbook.SheetNames); setCurrentPreviewSheet(workbook.SheetNames[0]);
-                    detectColumns(sheetsData, workbook.SheetNames[0]);
-                };
-                reader.readAsArrayBuffer(file);
-            };
+            const handleFileUpload = (e) => { const file = e.target.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = (evt) => { const workbook = XLSX.read(new Uint8Array(evt.target.result), { type: 'array' }); const sheetsData = {}; workbook.SheetNames.forEach(name => { sheetsData[name] = XLSX.utils.sheet_to_json(workbook.Sheets[name], { header: 1 }); }); setAllSheets(sheetsData); setSheetNames(workbook.SheetNames); setCurrentPreviewSheet(workbook.SheetNames[0]); detectColumns(sheetsData, workbook.SheetNames[0]); }; reader.readAsArrayBuffer(file); };
             
             const handleCloudLoad = async (isAuto = false) => {
-                if (!apiUrl) {
-                    if (!isAuto) alert("Please connect to Google Sheet first.");
-                    return;
-                }
-                
-                setIsLoading(true);
-                if (isAuto) setIsBomLoading(true);
-
-                try {
-                    const res = await fetch(apiUrl + "?action=getBOM");
-                    const data = await res.json();
-                    
-                    if (Object.keys(data).length === 0) {
-                        // Suppress alert if auto-loading, or keep it subtle?
-                        // alert("No BOM sheets found on Cloud (Sheets other than Inventory/Transactions/Users)");
-                        return;
-                    }
-
-                    setAllSheets(data);
-                    const names = Object.keys(data);
-                    setSheetNames(names);
-                    setCurrentPreviewSheet(names[0]);
-                    detectColumns(data, names[0]);
-                } catch(e) { 
-                    if (!isAuto) alert("Error loading BOM from Cloud: " + e.message); 
-                    console.error(e);
-                } finally { 
-                    setIsLoading(false); 
-                    if (isAuto) setIsBomLoading(false);
-                }
+                if (!apiUrl) { if (!isAuto) alert("Please connect to Google Sheet first."); return; }
+                setIsLoading(true); if (isAuto) setIsBomLoading(true);
+                try { const res = await fetch(apiUrl + "?action=getBOM"); const data = await res.json(); if (Object.keys(data).length === 0) { return; } setAllSheets(data); const names = Object.keys(data); setSheetNames(names); setCurrentPreviewSheet(names[0]); detectColumns(data, names[0]); } catch(e) { if (!isAuto) alert("Error loading BOM from Cloud: " + e.message); console.error(e); } finally { setIsLoading(false); if (isAuto) setIsBomLoading(false); }
             }
 
             const getSheetBOM = (sheetName) => {
-                const data = allSheets[sheetName];
-                const bom = {};
-                if (!data) return bom;
-
+                const data = allSheets[sheetName]; const bom = {}; if (!data) return bom;
                 for (let i = headerRowIndex + 1; i < data.length; i++) {
-                    const row = data[i];
-                    if (!row || !row[partNoCol]) continue;
-                    const pNo = String(row[partNoCol]).trim();
-                    const qpu = parseFloat(row[qtyCol]) || 0;
-                    const pName = partNameCol !== -1 ? row[partNameCol] : "";
-                    const lvl = levelCol !== -1 ? parseLvl(row[levelCol]) : "-";
-
-                    if (qpu > 0) {
-                        if (!bom[pNo]) {
-                            bom[pNo] = { partNo: pNo, partName: pName, level: lvl, qty: 0 };
-                        }
-                        bom[pNo].qty += qpu;
-                    }
-                }
-                return bom;
+                    const row = data[i]; if (!row || !row[partNoCol]) continue;
+                    const pNo = String(row[partNoCol]).trim(); const qpu = parseFloat(row[qtyCol]) || 0; const pName = partNameCol !== -1 ? row[partNameCol] : ""; const lvl = levelCol !== -1 ? parseLvl(row[levelCol]) : "-";
+                    if (qpu > 0) { if (!bom[pNo]) { bom[pNo] = { partNo: pNo, partName: pName, level: lvl, qty: 0 }; } bom[pNo].qty += qpu; }
+                } return bom;
             };
 
             const handlePreCalculate = () => {
                 if (partNoCol === -1 || qtyCol === -1) return alert("กรุณาเลือก Column Part No และ Qty ในขั้นตอนที่ 1 ก่อน");
-                const candidates = orders.map(order => {
-                    const result = findSmartMatch(order.model, sheetNames);
-                    return { input: order.model, qty: order.qty, matchedSheet: result.name, score: result.score, tokens: result.tokens, matches: result.matches, allCandidates: result.candidates, manualOverride: null };
-                });
+                const candidates = orders.map(order => { const result = findSmartMatch(order.model, sheetNames); return { input: order.model, qty: order.qty, matchedSheet: result.name, score: result.score, tokens: result.tokens, matches: result.matches, allCandidates: result.candidates, manualOverride: null }; });
                 setMatchCandidates(candidates); setShowConfirmModal(true);
             };
 
             const handleCalculateFinal = () => {
-                setShowConfirmModal(false);
-                const summaryMap = {};
-                
+                setShowConfirmModal(false); const summaryMap = {};
                 matchCandidates.forEach(cand => {
-                    const sheetName = cand.matchedSheet; if (!sheetName) return;
-                    const data = allSheets[sheetName];
+                    const sheetName = cand.matchedSheet; if (!sheetName) return; const data = allSheets[sheetName];
                     for (let i = headerRowIndex + 1; i < data.length; i++) {
                         const row = data[i]; if (!row || !row[partNoCol]) continue;
-                        const pNo = String(row[partNoCol]).trim();
-                        const qpu = parseFloat(row[qtyCol]) || 0;
-                        const pName = partNameCol !== -1 ? row[partNameCol] : "";
-                        const lvl = levelCol !== -1 ? parseLvl(row[levelCol]) : "-";
-                        const reuseVal = reuseCol !== -1 ? String(row[reuseCol]).trim() : "-";
-                        
-                        if (qpu > 0) {
-                            if (!summaryMap[pNo]) {
-                                summaryMap[pNo] = { 
-                                    partNo: pNo, 
-                                    partName: pName, 
-                                    level: lvl, 
-                                    reqQty: 0,
-                                    reuse: new Set(),
-                                    breakdown: [] // Init breakdown array
-                                };
-                            }
-                            const totalForThisOrder = qpu * cand.qty;
-                            summaryMap[pNo].reqQty += totalForThisOrder;
-                            if (reuseVal !== "-") summaryMap[pNo].reuse.add(reuseVal);
-                            
-                            // Add details for breakdown
-                            summaryMap[pNo].breakdown.push({
-                                model: cand.input,
-                                sheetMatched: sheetName,
-                                orderQty: cand.qty,
-                                perUnit: qpu,
-                                total: totalForThisOrder
-                            });
+                        const pNo = String(row[partNoCol]).trim(); const qpu = parseFloat(row[qtyCol]) || 0; const pName = partNameCol !== -1 ? row[partNameCol] : ""; const lvl = levelCol !== -1 ? parseLvl(row[levelCol]) : "-"; const reuseVal = reuseCol !== -1 ? String(row[reuseCol]).trim() : "-";
+                        if (qpu > 0) { if (!summaryMap[pNo]) { summaryMap[pNo] = { partNo: pNo, partName: pName, level: lvl, reqQty: 0, reuse: new Set(), breakdown: [] }; }
+                            const totalForThisOrder = qpu * cand.qty; summaryMap[pNo].reqQty += totalForThisOrder; if (reuseVal !== "-") summaryMap[pNo].reuse.add(reuseVal);
+                            summaryMap[pNo].breakdown.push({ model: cand.input, sheetMatched: sheetName, orderQty: cand.qty, perUnit: qpu, total: totalForThisOrder });
                         }
                     }
                 });
-
-                const resultList = Object.values(summaryMap).map(req => {
-                    const stockItem = inventory.find(i => i.partNo === req.partNo);
-                    const onHand = stockItem ? stockItem.qty : 0;
-                    const diff = onHand - req.reqQty;
-                    const reuseDisplay = req.reuse.size > 0 ? Array.from(req.reuse).join(", ") : "-";
-                    return { ...req, onHand, diff, reuse: reuseDisplay, status: diff >= 0 ? 'OK' : 'SHORT' };
-                });
-                setFinalSummary(resultList);
-                setStep(3);
+                const resultList = Object.values(summaryMap).map(req => { const stockItem = inventory.find(i => i.partNo === req.partNo); const onHand = stockItem ? stockItem.qty : 0; const diff = onHand - req.reqQty; const reuseDisplay = req.reuse.size > 0 ? Array.from(req.reuse).join(", ") : "-"; return { ...req, onHand, diff, reuse: reuseDisplay, status: diff >= 0 ? 'OK' : 'SHORT' }; });
+                setFinalSummary(resultList); setStep(3);
             };
 
-            // --- Compare Functions ---
             const addCompareModel = () => setCompareList([...compareList, ""]);
             const removeCompareModel = (index) => setCompareList(compareList.filter((_, i) => i !== index));
-            const updateCompareList = (index, val) => {
-                const newList = [...compareList];
-                newList[index] = val;
-                setCompareList(newList);
-            };
+            const updateCompareList = (index, val) => { const newList = [...compareList]; newList[index] = val; setCompareList(newList); };
 
             const handleCompare = () => {
-                const validModels = compareList.filter(m => m !== "");
-                if (validModels.length < 2) return alert("กรุณาเลือกอย่างน้อย 2 รุ่น");
-                
-                const bomMaps = validModels.map(name => ({ name, bom: getSheetBOM(name) }));
-                const allPartNos = new Set();
-                bomMaps.forEach(({bom}) => Object.keys(bom).forEach(k => allPartNos.add(k)));
-
+                const validModels = compareList.filter(m => m !== ""); if (validModels.length < 2) return alert("กรุณาเลือกอย่างน้อย 2 รุ่น");
+                const bomMaps = validModels.map(name => ({ name, bom: getSheetBOM(name) })); const allPartNos = new Set(); bomMaps.forEach(({bom}) => Object.keys(bom).forEach(k => allPartNos.add(k)));
                 const result = [];
                 allPartNos.forEach(pNo => {
-                    const row = { partNo: pNo, partName: "", quantities: [], status: 'Same' };
-                    let firstQty = -1;
-                    let isDiff = false;
-                    
-                    bomMaps.forEach(({bom}) => {
-                        const item = bom[pNo];
-                        const qty = item ? item.qty : 0;
-                        if(item && !row.partName) row.partName = item.partName;
-                        
-                        row.quantities.push(qty);
-                        
-                        if(firstQty === -1) firstQty = qty;
-                        else if(qty !== firstQty) isDiff = true;
-                    });
-                    
-                    row.status = isDiff ? 'Diff' : 'Same';
-                    result.push(row);
+                    const row = { partNo: pNo, partName: "", quantities: [], status: 'Same' }; let firstQty = -1; let isDiff = false;
+                    bomMaps.forEach(({bom}) => { const item = bom[pNo]; const qty = item ? item.qty : 0; if(item && !row.partName) row.partName = item.partName; row.quantities.push(qty); if(firstQty === -1) firstQty = qty; else if(qty !== firstQty) isDiff = true; });
+                    row.status = isDiff ? 'Diff' : 'Same'; result.push(row);
                 });
-                
                 setCompResult({ models: validModels, rows: result });
             };
 
-            const handleExportCompare = () => {
-                if(!compResult) return;
-                const data = compResult.rows.map(row => {
-                    const exportRow = { "Part No": row.partNo, "Desc": row.partName };
-                    compResult.models.forEach((m, i) => {
-                        exportRow[`Qty ${m}`] = row.quantities[i];
-                    });
-                    exportRow["Status"] = row.status;
-                    return exportRow;
-                });
-                exportToExcel(data, `Compare_Result`);
-            };
-
-            const handleAutoDeduct = () => {
-                if(!confirm("ยืนยันตัดสต็อก?")) return;
-                let count = 0;
-                finalSummary.forEach(item => {
-                    if (item.reqQty > 0 && item.onHand > 0) {
-                        const deduct = Math.min(item.reqQty, item.onHand);
-                        addTransaction('OUT', item.partNo, deduct, 'MRP-AUTO', 'Auto deduct from BOM');
-                        count++;
-                    }
-                });
-                alert(`ตัดสต็อกแล้ว ${count} รายการ`);
-                setStep(1); setFinalSummary(null);
-            };
-
-            const handleExportPR = () => {
-                const shortage = finalSummary.filter(item => item.status === 'SHORT');
-                if(shortage.length === 0) return alert("ไม่มีรายการของขาด");
-                const data = shortage.map(item => ({
-                    "Part No": item.partNo, "Description": item.partName, "Required Qty": item.reqQty, "On Hand": item.onHand, "To Order": Math.abs(item.diff), "Unit": "PCS", "Type": item.reuse
-                }));
-                exportToExcel(data, "Purchase_Request");
-            };
-
-            // Sorting Logic
-            const handleSort = (key) => {
-                let direction = 'asc';
-                if (sortConfig.key === key && sortConfig.direction === 'asc') {
-                    direction = 'desc';
-                }
-                setSortConfig({ key, direction });
-            };
-
-            const sortedSummary = useMemo(() => {
-                if (!finalSummary) return null;
-                let sortableItems = [...finalSummary];
-                if (sortConfig.key) {
-                    sortableItems.sort((a, b) => {
-                        let aVal = a[sortConfig.key];
-                        let bVal = b[sortConfig.key];
-                        
-                        // Handle specific column parsing if needed
-                        if (sortConfig.key === 'level') {
-                            const aLvl = aVal === '-' ? 999999 : Number(aVal);
-                            const bLvl = bVal === '-' ? 999999 : Number(bVal);
-                            return sortConfig.direction === 'asc' ? aLvl - bLvl : bLvl - aLvl;
-                        }
-                        
-                        // Numeric columns
-                        if (['reqQty', 'onHand', 'diff'].includes(sortConfig.key)) {
-                            return sortConfig.direction === 'asc' ? aVal - bVal : bVal - aVal;
-                        }
-
-                        // String columns
-                        if (typeof aVal === 'string') aVal = aVal.toLowerCase();
-                        if (typeof bVal === 'string') bVal = bVal.toLowerCase();
-
-                        if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1;
-                        if (aVal > bVal) return sortConfig.direction === 'asc' ? 1 : -1;
-                        return 0;
-                    });
-                }
-                return sortableItems;
-            }, [finalSummary, sortConfig]);
-
-            // Helper to render sort icon
-            const SortIcon = ({ column }) => {
-                if (sortConfig.key !== column) return <i className="fa-solid fa-sort text-slate-300 ml-1 text-[10px]"></i>;
-                return sortConfig.direction === 'asc' 
-                    ? <i className="fa-solid fa-sort-up text-blue-600 ml-1"></i>
-                    : <i className="fa-solid fa-sort-down text-blue-600 ml-1"></i>;
-            };
+            const handleExportCompare = () => { if(!compResult) return; const data = compResult.rows.map(row => { const exportRow = { "Part No": row.partNo, "Desc": row.partName }; compResult.models.forEach((m, i) => { exportRow[`Qty ${m}`] = row.quantities[i]; }); exportRow["Status"] = row.status; return exportRow; }); exportToExcel(data, `Compare_Result`); };
+            const handleAutoDeduct = () => { if(!confirm("ยืนยันตัดสต็อก?")) return; let count = 0; finalSummary.forEach(item => { if (item.reqQty > 0 && item.onHand > 0) { const deduct = Math.min(item.reqQty, item.onHand); addTransaction('OUT', item.partNo, deduct, 'MRP-AUTO', 'Auto deduct from BOM'); count++; } }); alert(`ตัดสต็อกแล้ว ${count} รายการ`); setStep(1); setFinalSummary(null); };
+            const handleExportPR = () => { const shortage = finalSummary.filter(item => item.status === 'SHORT'); if(shortage.length === 0) return alert("ไม่มีรายการของขาด"); const data = shortage.map(item => ({ "Part No": item.partNo, "Description": item.partName, "Required Qty": item.reqQty, "On Hand": item.onHand, "To Order": Math.abs(item.diff), "Unit": "PCS", "Type": item.reuse })); exportToExcel(data, "Purchase_Request"); };
+            const handleSort = (key) => { let direction = 'asc'; if (sortConfig.key === key && sortConfig.direction === 'asc') { direction = 'desc'; } setSortConfig({ key, direction }); };
+            const sortedSummary = useMemo(() => { if (!finalSummary) return null; let sortableItems = [...finalSummary]; if (sortConfig.key) { sortableItems.sort((a, b) => { let aVal = a[sortConfig.key]; let bVal = b[sortConfig.key]; if (sortConfig.key === 'level') { const aLvl = aVal === '-' ? 999999 : Number(aVal); const bLvl = bVal === '-' ? 999999 : Number(bVal); return sortConfig.direction === 'asc' ? aLvl - bLvl : bLvl - aLvl; } if (['reqQty', 'onHand', 'diff'].includes(sortConfig.key)) { return sortConfig.direction === 'asc' ? aVal - bVal : bVal - aVal; } if (typeof aVal === 'string') aVal = aVal.toLowerCase(); if (typeof bVal === 'string') bVal = bVal.toLowerCase(); if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1; if (aVal > bVal) return sortConfig.direction === 'asc' ? 1 : -1; return 0; }); } return sortableItems; }, [finalSummary, sortConfig]);
+            const SortIcon = ({ column }) => { if (sortConfig.key !== column) return <i className="fa-solid fa-sort text-slate-300 ml-1 text-[10px]"></i>; return sortConfig.direction === 'asc' ? <i className="fa-solid fa-sort-up text-blue-600 ml-1"></i> : <i className="fa-solid fa-sort-down text-blue-600 ml-1"></i>; };
 
             return (
                 <div className="animate-fade-in max-w-5xl mx-auto space-y-6">
                     <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><Icons.Production className="text-blue-600"/> Advanced Production Planning</h2>
-                    
                     <div className="flex bg-white rounded-xl p-2 shadow-sm border">
-                        {['1. Config BOM', '2. Input Order / Compare', '3. Result'].map((t, i) => {
-                            const canAccess = i === 0 || (i === 1 && sheetNames.length > 0) || (i === 2 && finalSummary);
-                            return (
-                                <button 
-                                    key={i} 
-                                    onClick={() => canAccess && setStep(i + 1)} 
-                                    className={`flex-1 text-center py-2 text-sm font-bold rounded-lg transition ${
-                                        step === i + 1 
-                                            ? 'bg-blue-100 text-blue-700' 
-                                            : canAccess 
-                                                ? 'text-slate-600 hover:bg-slate-50 cursor-pointer' 
-                                                : 'text-slate-300 cursor-not-allowed'
-                                    }`}
-                                >
-                                    {t}
-                                </button>
-                            );
-                        })}
+                        {['1. Config BOM', '2. Input Order / Compare', '3. Result'].map((t, i) => { const canAccess = i === 0 || (i === 1 && sheetNames.length > 0) || (i === 2 && finalSummary); return (<button key={i} onClick={() => canAccess && setStep(i + 1)} className={`flex-1 text-center py-2 text-sm font-bold rounded-lg transition ${step === i + 1 ? 'bg-blue-100 text-blue-700' : canAccess ? 'text-slate-600 hover:bg-slate-50 cursor-pointer' : 'text-slate-300 cursor-not-allowed'}`}>{t}</button>); })}
                     </div>
 
                     {step === 1 && (
                         <div className="bg-white p-6 rounded-2xl shadow-sm border animate-fade-in">
-                             {/* Show Loading State in Place of Empty State */}
-                             {isBomLoading ? (
-                                <div className="flex flex-col items-center justify-center py-16 animate-pulse">
-                                    <Icons.Cloud className="text-5xl text-blue-300 mb-4"/>
-                                    <h3 className="text-lg font-bold text-slate-600">Syncing BOM from Cloud...</h3>
-                                    <p className="text-xs text-slate-400">Please wait while we fetch your data</p>
-                                </div>
-                            ) : sheetNames.length === 0 ? (
-                                <div className="flex flex-col items-center gap-4 py-8">
-                                     <div className="border-4 border-dashed border-slate-100 rounded-3xl p-16 text-center hover:border-blue-200 transition group cursor-pointer relative w-full max-w-md">
-                                        <Icons.Excel className="text-4xl text-green-500 mb-4"/>
-                                        <h3 className="text-lg font-bold text-slate-700">Drop Multi-Sheet Excel Here</h3>
-                                        <input type="file" onChange={handleFileUpload} className="absolute inset-0 opacity-0 cursor-pointer" />
-                                    </div>
-                                    <div className="text-slate-400 font-bold">- OR -</div>
-                                    <button onClick={() => handleCloudLoad(false)} disabled={!apiUrl} className="bg-purple-600 text-white px-6 py-3 rounded-xl font-bold hover:bg-purple-700 shadow-lg flex items-center gap-2 disabled:bg-slate-300 disabled:cursor-not-allowed">
-                                        <Icons.Cloud/> Load BOM from Cloud
-                                    </button>
-                                    {!apiUrl && <div className="text-xs text-red-400">* Please connect Google Sheet in Settings first</div>}
-                                </div>
-                            ) : (
-                                <div>
-                                    <div className="flex justify-between items-center mb-4">
-                                        <h3 className="font-bold text-lg"><Icons.GitMerge className="text-blue-500"/> Select Columns</h3>
-                                        <button onClick={()=>setSheetNames([])} className="text-xs text-red-500 border border-red-200 px-3 py-1 rounded hover:bg-red-50">Reset File</button>
-                                    </div>
-                                    <div className="flex gap-2 overflow-x-auto pb-2 mb-2">
-                                        {sheetNames.map(name => <button key={name} onClick={()=>setCurrentPreviewSheet(name)} className={`px-3 py-1 rounded-full text-xs border whitespace-nowrap ${currentPreviewSheet===name?'bg-blue-600 text-white':'bg-white'}`}>{name}</button>)}
-                                    </div>
-                                    <div className="overflow-auto border rounded-xl max-h-[500px] w-full">
-                                        <table className="w-max text-xs text-left border-collapse whitespace-nowrap">
-                                            <thead className="sticky top-0 bg-white shadow-sm z-10">
-                                                <tr>
-                                                    <th className="p-3 w-10 text-center bg-slate-50 border-b border-r">#</th>
-                                                    {allSheets[currentPreviewSheet]?.[headerRowIndex]?.map((h, i) => (
-                                                        <ResizableTh 
-                                                            key={i} 
-                                                            width={bomColWidths[i] || 150} 
-                                                            onResize={w => setBomColWidths(prev => ({...prev, [i]: w}))}
-                                                            className="p-2 border-b border-r text-center bg-white relative group"
-                                                        >
-                                                            <div className="flex flex-col gap-1 w-full">
-                                                                 <div className="grid grid-cols-2 gap-1 mb-1">
-                                                                     <button onClick={()=>setPartNoCol(i)} className={`px-1 py-0.5 border rounded text-[9px] ${i===partNoCol?'bg-red-500 text-white':'bg-white text-slate-400 hover:bg-slate-50'}`}>P#</button>
-                                                                     <button onClick={()=>setQtyCol(i)} className={`px-1 py-0.5 border rounded text-[9px] ${i===qtyCol?'bg-sky-500 text-white':'bg-white text-slate-400 hover:bg-slate-50'}`}>Qty</button>
-                                                                     <button onClick={()=>setLevelCol(i)} className={`px-1 py-0.5 border rounded text-[9px] ${i===levelCol?'bg-purple-500 text-white':'bg-white text-slate-400 hover:bg-slate-50'}`}>Lvl</button>
-                                                                     <button onClick={()=>setReuseCol(i)} className={`px-1 py-0.5 border rounded text-[9px] ${i===reuseCol?'bg-orange-500 text-white':'bg-white text-slate-400 hover:bg-slate-50'}`}>Type</button>
-                                                                 </div>
-                                                                 <div className="font-bold text-slate-700 truncate px-1" title={h}>{h||`Col ${i}`}</div>
-                                                            </div>
-                                                        </ResizableTh>
-                                                    ))}
-                                                </tr>
-                                            </thead>
-                                            <tbody>
-                                                {allSheets[currentPreviewSheet]?.slice(0, 15).map((row, ri) => (
-                                                    <tr key={ri} className={`border-b ${ri===headerRowIndex?'bg-slate-800 text-white':''}`}>
-                                                        <td className="p-2 text-center text-slate-300 border-r">{ri+1}</td>
-                                                        {row.map((cell, ci) => <td key={ci} className={`p-2 border-r truncate max-w-[150px] ${ci===partNoCol?'text-red-600 font-bold':''} ${ci===qtyCol?'text-sky-600 font-bold':''} ${ci===levelCol?'text-purple-600 font-bold':''} ${ci===reuseCol?'text-orange-600 font-bold':''}`}>{cell}</td>)}
-                                                    </tr>
-                                                ))}
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                    <div className="mt-4 flex justify-between items-center bg-slate-50 p-3 rounded-lg text-xs text-slate-500">
-                                        <div>P# Col: <span className="font-bold text-red-500">{partNoCol}</span>, Qty Col: <span className="font-bold text-sky-500">{qtyCol}</span>, Lvl Col: <span className="font-bold text-purple-500">{levelCol}</span>, Type Col: <span className="font-bold text-orange-500">{reuseCol}</span></div>
-                                        <button onClick={()=>setStep(2)} className="bg-blue-600 text-white px-6 py-2 rounded-lg font-bold hover:bg-blue-700">Next Step</button>
-                                    </div>
-                                </div>
-                            )}
+                             {isBomLoading ? (<div className="flex flex-col items-center justify-center py-16 animate-pulse"><Icons.Cloud className="text-5xl text-blue-300 mb-4"/><h3 className="text-lg font-bold text-slate-600">Syncing BOM from Cloud...</h3><p className="text-xs text-slate-400">Please wait while we fetch your data</p></div>) : sheetNames.length === 0 ? (<div className="flex flex-col items-center gap-4 py-8"><div className="border-4 border-dashed border-slate-100 rounded-3xl p-16 text-center hover:border-blue-200 transition group cursor-pointer relative w-full max-w-md"><Icons.Excel className="text-4xl text-green-500 mb-4"/><h3 className="text-lg font-bold text-slate-700">Drop Multi-Sheet Excel Here</h3><input type="file" onChange={handleFileUpload} className="absolute inset-0 opacity-0 cursor-pointer" /></div><div className="text-slate-400 font-bold">- OR -</div><button onClick={() => handleCloudLoad(false)} disabled={!apiUrl} className="bg-purple-600 text-white px-6 py-3 rounded-xl font-bold hover:bg-purple-700 shadow-lg flex items-center gap-2 disabled:bg-slate-300 disabled:cursor-not-allowed"><Icons.Cloud/> Load BOM from Cloud</button>{!apiUrl && <div className="text-xs text-red-400">* Please connect Google Sheet in Settings first</div>}</div>) : (<div><div className="flex justify-between items-center mb-4"><h3 className="font-bold text-lg"><Icons.GitMerge className="text-blue-500"/> Select Columns</h3><button onClick={()=>setSheetNames([])} className="text-xs text-red-500 border border-red-200 px-3 py-1 rounded hover:bg-red-50">Reset File</button></div><div className="flex gap-2 overflow-x-auto pb-2 mb-2">{sheetNames.map(name => <button key={name} onClick={()=>setCurrentPreviewSheet(name)} className={`px-3 py-1 rounded-full text-xs border whitespace-nowrap ${currentPreviewSheet===name?'bg-blue-600 text-white':'bg-white'}`}>{name}</button>)}</div><div className="overflow-auto border rounded-xl max-h-[500px] w-full"><table className="w-max text-xs text-left border-collapse whitespace-nowrap"><thead className="sticky top-0 bg-white shadow-sm z-10"><tr><th className="p-3 w-10 text-center bg-slate-50 border-b border-r">#</th>{allSheets[currentPreviewSheet]?.[headerRowIndex]?.map((h, i) => (<ResizableTh key={i} width={bomColWidths[i] || 150} onResize={w => setBomColWidths(prev => ({...prev, [i]: w}))} className="p-2 border-b border-r text-center bg-white relative group"><div className="flex flex-col gap-1 w-full"><div className="grid grid-cols-2 gap-1 mb-1"><button onClick={()=>setPartNoCol(i)} className={`px-1 py-0.5 border rounded text-[9px] ${i===partNoCol?'bg-red-500 text-white':'bg-white text-slate-400 hover:bg-slate-50'}`}>P#</button><button onClick={()=>setQtyCol(i)} className={`px-1 py-0.5 border rounded text-[9px] ${i===qtyCol?'bg-sky-500 text-white':'bg-white text-slate-400 hover:bg-slate-50'}`}>Qty</button><button onClick={()=>setLevelCol(i)} className={`px-1 py-0.5 border rounded text-[9px] ${i===levelCol?'bg-purple-500 text-white':'bg-white text-slate-400 hover:bg-slate-50'}`}>Lvl</button><button onClick={()=>setReuseCol(i)} className={`px-1 py-0.5 border rounded text-[9px] ${i===reuseCol?'bg-orange-500 text-white':'bg-white text-slate-400 hover:bg-slate-50'}`}>Type</button></div><div className="font-bold text-slate-700 truncate px-1" title={h}>{h||`Col ${i}`}</div></div></ResizableTh>))}</tr></thead><tbody>{allSheets[currentPreviewSheet]?.slice(0, 15).map((row, ri) => (<tr key={ri} className={`border-b ${ri===headerRowIndex?'bg-slate-800 text-white':''}`}><td className="p-2 text-center text-slate-300 border-r">{ri+1}</td>{row.map((cell, ci) => <td key={ci} className={`p-2 border-r truncate max-w-[150px] ${ci===partNoCol?'text-red-600 font-bold':''} ${ci===qtyCol?'text-sky-600 font-bold':''} ${ci===levelCol?'text-purple-600 font-bold':''} ${ci===reuseCol?'text-orange-600 font-bold':''}`}>{cell}</td>)}</tr>))}</tbody></table></div><div className="mt-4 flex justify-between items-center bg-slate-50 p-3 rounded-lg text-xs text-slate-500"><div>P# Col: <span className="font-bold text-red-500">{partNoCol}</span>, Qty Col: <span className="font-bold text-sky-500">{qtyCol}</span>, Lvl Col: <span className="font-bold text-purple-500">{levelCol}</span>, Type Col: <span className="font-bold text-orange-500">{reuseCol}</span></div><button onClick={()=>setStep(2)} className="bg-blue-600 text-white px-6 py-2 rounded-lg font-bold hover:bg-blue-700">Next Step</button></div></div>)}
                         </div>
                     )}
 
                     {step === 2 && (
                         <div className="bg-white p-6 rounded-2xl shadow-sm border animate-fade-in">
-                            <div className="flex gap-6 border-b mb-6">
-                                <button onClick={()=>setMode('plan')} className={`pb-3 px-2 text-sm font-bold transition ${mode==='plan'?'border-b-2 border-blue-600 text-blue-600':'text-slate-400 hover:text-slate-600'}`}><Icons.Production className="mr-1"/> Production Plan</button>
-                                <button onClick={()=>setMode('compare')} className={`pb-3 px-2 text-sm font-bold transition ${mode==='compare'?'border-b-2 border-purple-600 text-purple-600':'text-slate-400 hover:text-slate-600'}`}><Icons.Compare className="mr-1"/> BOM Compare</button>
-                            </div>
-
-                            {mode === 'plan' ? (
-                                <>
-                                    <h3 className="font-bold text-lg mb-2 text-slate-700">Input Orders with Smart Match</h3>
-                                    <div className="bg-blue-50 p-3 rounded-lg text-xs text-blue-800 mb-4">ระบบใช้ Fuzzy Logic ช่วยเดาชื่อรุ่นที่พิมพ์ผิดได้ (เช่น QWKDE -> QWKPE)</div>
-                                    <textarea value={orderText} onChange={e=>{
-                                        setOrderText(e.target.value);
-                                        setOrders(e.target.value.split('\n').map(l=>{const p=l.trim().split(/[\t\s,]+/); return p.length>=2?{model:p[0],qty:parseFloat(p[p.length-1])}:null}).filter(x=>x&&!isNaN(x.qty)));
-                                    }} className="w-full h-40 p-4 border rounded-xl font-mono text-sm outline-none focus:ring-2 focus:ring-blue-100" placeholder="ModelA  100&#10;ModelB  50"></textarea>
-                                    <button onClick={handlePreCalculate} disabled={orders.length===0} className="w-full mt-4 bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 shadow-lg"><Icons.Check/> Check & Calculate</button>
-                                </>
-                            ) : (
-                                <>
-                                    <div className="mb-6 bg-purple-50 p-4 rounded-xl border border-purple-100">
-                                        <div className="flex justify-between items-center mb-4">
-                                            <h3 className="font-bold text-purple-800 flex items-center gap-2"><Icons.Compare/> Multi-Model Compare</h3>
-                                            <button onClick={addCompareModel} className="bg-white border border-purple-200 text-purple-600 px-3 py-1 rounded-lg text-xs font-bold hover:bg-purple-100 flex items-center gap-1"><Icons.Plus/> Add Model</button>
-                                        </div>
-                                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                                            {compareList.map((model, idx) => (
-                                                <div key={idx} className="flex gap-2">
-                                                    <div className="flex-1">
-                                                        <label className="text-[10px] font-bold text-purple-400 mb-1 block">Model {idx + 1}</label>
-                                                        <select className="w-full p-2 border rounded-lg bg-white text-sm" value={model} onChange={e=>updateCompareList(idx, e.target.value)}>
-                                                            <option value="">-- Select Model --</option>
-                                                            {sheetNames.map(s=><option key={s} value={s}>{s}</option>)}
-                                                        </select>
-                                                    </div>
-                                                    {compareList.length > 2 && (
-                                                        <button onClick={()=>removeCompareModel(idx)} className="mt-6 text-red-400 hover:text-red-600"><Icons.X/></button>
-                                                    )}
-                                                </div>
-                                            ))}
-                                        </div>
-                                        <button onClick={handleCompare} className="w-full mt-4 py-3 bg-purple-600 text-white rounded-xl font-bold hover:bg-purple-700 shadow-lg">Compare All</button>
-                                    </div>
-                                    
-                                    {compResult && (
-                                        <div className="animate-fade-in">
-                                            <div className="flex justify-between items-center mb-2">
-                                                <h4 className="font-bold text-slate-700">Comparison Result</h4>
-                                                <button onClick={handleExportCompare} className="text-xs bg-emerald-100 text-emerald-700 px-3 py-1 rounded font-bold hover:bg-emerald-200"><Icons.Download/> Export Excel</button>
-                                            </div>
-                                            <div className="overflow-auto border rounded-xl max-h-[500px]">
-                                                <table className="w-max text-sm text-left table-fixed">
-                                                    <thead className="bg-slate-50 text-slate-500 font-bold text-xs uppercase sticky top-0 z-20 shadow-sm">
-                                                        <tr>
-                                                            <ResizableTh width={compColWidths.partNo} onResize={w=>setCompColWidths({...compColWidths, partNo: w})} className="p-3">Part No</ResizableTh>
-                                                            <ResizableTh width={compColWidths.desc} onResize={w=>setCompColWidths({...compColWidths, desc: w})} className="p-3">Desc</ResizableTh>
-                                                            {compResult.models.map((m, i) => (
-                                                                <ResizableTh key={i} width={compColWidths.model} onResize={w=>setCompColWidths({...compColWidths, model: w})} className="p-3 text-right text-blue-600">{m}</ResizableTh>
-                                                            ))}
-                                                            <ResizableTh width={compColWidths.status} onResize={w=>setCompColWidths({...compColWidths, status: w})} className="p-3 text-center">Status</ResizableTh>
-                                                        </tr>
-                                                    </thead>
-                                                    <tbody className="divide-y divide-slate-100 bg-white">
-                                                        {compResult.rows.map((row, i) => (
-                                                            <tr key={i} className={`hover:bg-slate-50 ${row.status==='Diff' ? 'bg-orange-50/30' : ''}`}>
-                                                                <td className="p-3 font-mono font-bold text-slate-700 align-top break-words">{row.partNo}</td>
-                                                                <td className="p-3 text-xs text-slate-500 whitespace-normal align-top break-words">{row.partName}</td>
-                                                                {row.quantities.map((q, qi) => (
-                                                                    <td key={qi} className={`p-3 text-right font-bold align-top ${q>0 ? 'text-blue-600' : 'text-slate-300'}`}>{formatNum(q)}</td>
-                                                                ))}
-                                                                <td className="p-3 text-center align-top">
-                                                                    <span className={`px-2 py-1 rounded text-[10px] font-bold ${row.status==='Same'?'bg-slate-100 text-slate-400':'bg-orange-100 text-orange-600'}`}>{row.status}</span>
-                                                                </td>
-                                                            </tr>
-                                                        ))}
-                                                    </tbody>
-                                                </table>
-                                            </div>
-                                        </div>
-                                    )}
-                                </>
-                            )}
+                            <div className="flex gap-6 border-b mb-6"><button onClick={()=>setMode('plan')} className={`pb-3 px-2 text-sm font-bold transition ${mode==='plan'?'border-b-2 border-blue-600 text-blue-600':'text-slate-400 hover:text-slate-600'}`}><Icons.Production className="mr-1"/> Production Plan</button><button onClick={()=>setMode('compare')} className={`pb-3 px-2 text-sm font-bold transition ${mode==='compare'?'border-b-2 border-purple-600 text-purple-600':'text-slate-400 hover:text-slate-600'}`}><Icons.Compare className="mr-1"/> BOM Compare</button></div>
+                            {mode === 'plan' ? (<><h3 className="font-bold text-lg mb-2 text-slate-700">Input Orders with Smart Match</h3><div className="bg-blue-50 p-3 rounded-lg text-xs text-blue-800 mb-4">ระบบใช้ Fuzzy Logic ช่วยเดาชื่อรุ่นที่พิมพ์ผิดได้ (เช่น QWKDE -> QWKPE)</div><textarea value={orderText} onChange={e=>{ setOrderText(e.target.value); setOrders(e.target.value.split('\n').map(l=>{const p=l.trim().split(/[\t\s,]+/); return p.length>=2?{model:p[0],qty:parseFloat(p[p.length-1])}:null}).filter(x=>x&&!isNaN(x.qty))); }} className="w-full h-40 p-4 border rounded-xl font-mono text-sm outline-none focus:ring-2 focus:ring-blue-100" placeholder="ModelA  100&#10;ModelB  50"></textarea><button onClick={handlePreCalculate} disabled={orders.length===0} className="w-full mt-4 bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 shadow-lg"><Icons.Check/> Check & Calculate</button></>) : (<><div className="mb-6 bg-purple-50 p-4 rounded-xl border border-purple-100"><div className="flex justify-between items-center mb-4"><h3 className="font-bold text-purple-800 flex items-center gap-2"><Icons.Compare/> Multi-Model Compare</h3><button onClick={addCompareModel} className="bg-white border border-purple-200 text-purple-600 px-3 py-1 rounded-lg text-xs font-bold hover:bg-purple-100 flex items-center gap-1"><Icons.Plus/> Add Model</button></div><div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">{compareList.map((model, idx) => (<div key={idx} className="flex gap-2"><div className="flex-1"><label className="text-[10px] font-bold text-purple-400 mb-1 block">Model {idx + 1}</label><select className="w-full p-2 border rounded-lg bg-white text-sm" value={model} onChange={e=>updateCompareList(idx, e.target.value)}><option value="">-- Select Model --</option>{sheetNames.map(s=><option key={s} value={s}>{s}</option>)}</select></div>{compareList.length > 2 && (<button onClick={()=>removeCompareModel(idx)} className="mt-6 text-red-400 hover:text-red-600"><Icons.X/></button>)}</div>))}</div><button onClick={handleCompare} className="w-full mt-4 py-3 bg-purple-600 text-white rounded-xl font-bold hover:bg-purple-700 shadow-lg">Compare All</button></div>{compResult && (<div className="animate-fade-in"><div className="flex justify-between items-center mb-2"><h4 className="font-bold text-slate-700">Comparison Result</h4><button onClick={handleExportCompare} className="text-xs bg-emerald-100 text-emerald-700 px-3 py-1 rounded font-bold hover:bg-emerald-200"><Icons.Download/> Export Excel</button></div><div className="overflow-auto border rounded-xl max-h-[500px]"><table className="w-max text-sm text-left table-fixed"><thead className="bg-slate-50 text-slate-500 font-bold text-xs uppercase sticky top-0 z-20 shadow-sm"><tr><ResizableTh width={compColWidths.partNo} onResize={w=>setCompColWidths({...compColWidths, partNo: w})} className="p-3">Part No</ResizableTh><ResizableTh width={compColWidths.desc} onResize={w=>setCompColWidths({...compColWidths, desc: w})} className="p-3">Desc</ResizableTh>{compResult.models.map((m, i) => (<ResizableTh key={i} width={compColWidths.model} onResize={w=>setCompColWidths({...compColWidths, model: w})} className="p-3 text-right text-blue-600">{m}</ResizableTh>))}<ResizableTh width={compColWidths.status} onResize={w=>setCompColWidths({...compColWidths, status: w})} className="p-3 text-center">Status</ResizableTh></tr></thead><tbody className="divide-y divide-slate-100 bg-white">{compResult.rows.map((row, i) => (<tr key={i} className={`hover:bg-slate-50 ${row.status==='Diff' ? 'bg-orange-50/30' : ''}`}><td className="p-3 font-mono font-bold text-slate-700 align-top break-words">{row.partNo}</td><td className="p-3 text-xs text-slate-500 whitespace-normal align-top break-words">{row.partName}</td>{row.quantities.map((q, qi) => (<td key={qi} className={`p-3 text-right font-bold align-top ${q>0 ? 'text-blue-600' : 'text-slate-300'}`}>{formatNum(q)}</td>))}<td className="p-3 text-center align-top"><span className={`px-2 py-1 rounded text-[10px] font-bold ${row.status==='Same'?'bg-slate-100 text-slate-400':'bg-orange-100 text-orange-600'}`}>{row.status}</span></td></tr>))}</tbody></table></div></div>)}</>)}
                         </div>
                     )}
 
                     {step === 3 && finalSummary && (
                         <div className="bg-white p-6 rounded-2xl shadow-sm border animate-fade-in">
-                            <div className="flex justify-between items-center mb-4">
-                                <h3 className="font-bold text-lg">Material Requirements & Stock Check</h3>
-                                <div className="flex gap-2">
-                                     <button onClick={handleExportPR} className="bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm font-bold shadow hover:bg-emerald-700"><Icons.Download/> Export PR</button>
-                                     <button onClick={handleAutoDeduct} className="bg-slate-800 text-white px-4 py-2 rounded-lg text-sm font-bold shadow hover:bg-slate-900"><Icons.Save/> Auto Cut Stock</button>
+                            <div className="flex justify-between items-center mb-4"><h3 className="font-bold text-lg">Material Requirements & Stock Check</h3><div className="flex gap-2"><button onClick={handleExportPR} className="bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm font-bold shadow hover:bg-emerald-700"><Icons.Download/> Export PR</button><button onClick={handleAutoDeduct} className="bg-slate-800 text-white px-4 py-2 rounded-lg text-sm font-bold shadow hover:bg-slate-900"><Icons.Save/> Auto Cut Stock</button></div></div>
+                            <div className="overflow-auto border rounded-xl max-h-[500px]"><table className="w-max text-sm text-left table-fixed"><thead className="bg-slate-100 text-slate-600 font-bold text-xs uppercase sticky top-0 z-20 shadow-sm"><tr><ResizableTh onClick={() => handleSort('id')} width={colWidths.id} onResize={w=>setColWidths({...colWidths, id: w})} className="p-3 cursor-pointer hover:bg-slate-100"># <SortIcon column="id"/></ResizableTh><ResizableTh onClick={() => handleSort('partNo')} width={colWidths.partNo} onResize={w=>setColWidths({...colWidths, partNo: w})} className="p-3 cursor-pointer hover:bg-slate-100">Part No <SortIcon column="partNo"/></ResizableTh><ResizableTh onClick={() => handleSort('partName')} width={colWidths.partName} onResize={w=>setColWidths({...colWidths, partName: w})} className="p-3 cursor-pointer hover:bg-slate-100">Description <SortIcon column="partName"/></ResizableTh><ResizableTh onClick={() => handleSort('level')} width={colWidths.lvl} onResize={w=>setColWidths({...colWidths, lvl: w})} className="p-3 text-center cursor-pointer hover:bg-slate-100">Level <SortIcon column="level"/></ResizableTh><ResizableTh onClick={() => handleSort('reuse')} width={colWidths.reuse} onResize={w=>setColWidths({...colWidths, reuse: w})} className="p-3 text-center cursor-pointer hover:bg-slate-100">Type <SortIcon column="reuse"/></ResizableTh><ResizableTh onClick={() => handleSort('reqQty')} width={colWidths.req} onResize={w=>setColWidths({...colWidths, req: w})} className="p-3 cursor-pointer hover:bg-slate-100">Required <SortIcon column="reqQty"/></ResizableTh><ResizableTh onClick={() => handleSort('onHand')} width={colWidths.oh} onResize={w=>setColWidths({...colWidths, oh: w})} className="p-3 cursor-pointer hover:bg-slate-100">On Hand <SortIcon column="onHand"/></ResizableTh><ResizableTh onClick={() => handleSort('diff')} width={colWidths.diff} onResize={w=>setColWidths({...colWidths, diff: w})} className="p-3 cursor-pointer hover:bg-slate-100">Diff <SortIcon column="diff"/></ResizableTh><ResizableTh onClick={() => handleSort('status')} width={colWidths.status} onResize={w=>setColWidths({...colWidths, status: w})} className="p-3 text-center cursor-pointer hover:bg-slate-100">Status <SortIcon column="status"/></ResizableTh></tr></thead><tbody className="divide-y divide-slate-100">{sortedSummary && sortedSummary.map((item, i) => (<tr key={i} className={`hover:bg-slate-50 ${item.status==='SHORT'?'bg-red-50':''}`}><td className="p-3 text-slate-400 text-xs text-center align-top">{i+1}</td><td className="p-3 align-top font-bold text-blue-700 break-words">{item.partNo}</td><td className="p-3 align-top text-[10px] text-slate-500 whitespace-normal break-words">{item.partName}</td><td className="p-3 align-top text-center"><span className={`px-2 py-1 rounded text-[10px] font-bold border ${item.level===1?'bg-purple-100 text-purple-700 border-purple-200':'bg-slate-100 text-slate-500 border-slate-200'}`}>{item.level}</span></td><td className="p-3 align-top text-center"><span className={`text-[10px] px-2 py-0.5 rounded border whitespace-nowrap ${item.reuse === 'New' ? 'bg-blue-50 text-blue-600 border-blue-100' : item.reuse === 'Reuse' ? 'bg-orange-50 text-orange-600 border-orange-100' : 'bg-slate-50 text-slate-500 border-slate-100'}`}>{item.reuse}</span></td><td className="p-3 align-top font-bold"><div className="flex items-center gap-2">{formatNum(item.reqQty)}<button onClick={()=>setBreakdownItem(item)} className="text-slate-400 hover:text-blue-500 transition"><Icons.Search/></button></div></td><td className="p-3 align-top text-slate-500">{formatNum(item.onHand)}</td><td className={`p-3 align-top font-bold ${item.diff<0?'text-red-600':'text-green-600'}`}>{item.diff>0?'+':''}{formatNum(item.diff)}</td><td className="p-3 align-top text-center">{item.status==='SHORT'?<span className="bg-red-100 text-red-700 px-2 py-1 rounded text-[10px] font-bold">Shortage</span>:<span className="bg-green-100 text-green-700 px-2 py-1 rounded text-[10px] font-bold">Allocated</span>}</td></tr>))}</tbody></table></div>
+                        </div>
+                    )}
+
+                    {showConfirmModal && (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 modal-overlay animate-fade-in">
+                            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-4xl max-h-[85vh] flex flex-col overflow-hidden">
+                                <div className="p-4 border-b bg-slate-50 flex justify-between items-center"><h3 className="font-bold text-lg text-slate-800">Confirm Model Matching (Fuzzy Logic)</h3></div>
+                                <div className="overflow-y-auto p-0 flex-1 bg-slate-50/50">
+                                    <table className="w-full text-sm text-left"><thead className="text-xs text-slate-500 uppercase bg-white border-b sticky top-0"><tr><th className="p-4">Input</th><th className="p-4">Matched Sheet</th><th className="p-4 text-center">Score</th></tr></thead>
+                                        <tbody className="divide-y divide-slate-100 bg-white">
+                                            {matchCandidates.map((c, i) => (
+                                                <tr key={i}>
+                                                    <td className="p-4">
+                                                        <div className="font-bold text-slate-700 mb-1">{c.input}</div>
+                                                        <div className="flex flex-wrap gap-1">{c.matches.map((m,mi)=><span key={mi} className={`token-base ${m.similarity===1?'token-perfect':m.similarity>0.5?'token-fuzzy':'token-missing'}`}>{m.token}</span>)}</div>
+                                                    </td>
+                                                    <td className="p-4">
+                                                        <select className="w-full p-2 border rounded-lg text-xs font-mono custom-select bg-white" value={c.matchedSheet||""} onChange={(e)=>{const up=[...matchCandidates]; up[i].matchedSheet=e.target.value; setMatchCandidates(up);}}>
+                                                            {!c.matchedSheet && <option value="">-- No Match --</option>}
+                                                            {c.allCandidates.map((cand, ci) => <option key={ci} value={cand.name}>{cand.name} ({(cand.score*100).toFixed(0)}%)</option>)}
+                                                            <optgroup label="All Sheets">{sheetNames.map(s=><option key={s} value={s}>{s}</option>)}</optgroup>
+                                                        </select>
+                                                    </td>
+                                                    <td className="p-4 text-center font-bold text-blue-600">{(c.score*100).toFixed(0)}%</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
                                 </div>
-                            </div>
-                            <div className="overflow-auto border rounded-xl max-h-[500px]">
-                                <table className="w-max text-sm text-left table-fixed">
-                                    <thead className="bg-slate-100 text-slate-600 font-bold text-xs uppercase sticky top-0 z-20 shadow-sm">
-                                        <tr>
-                                            <ResizableTh onClick={() => handleSort('id')} width={colWidths.id} onResize={w=>setColWidths({...colWidths, id: w})} className="p-3 cursor-pointer hover:bg-slate-100">
-                                                # <SortIcon column="id"/>
-                                            </ResizableTh>
-                                            <ResizableTh onClick={() => handleSort('partNo')} width={colWidths.partNo} onResize={w=>setColWidths({...colWidths, partNo: w})} className="p-3 cursor-pointer hover:bg-slate-100">
-                                                Part No <SortIcon column="partNo"/>
-                                            </ResizableTh>
-                                            <ResizableTh onClick={() => handleSort('partName')} width={colWidths.partName} onResize={w=>setColWidths({...colWidths, partName: w})} className="p-3 cursor-pointer hover:bg-slate-100">
-                                                Description <SortIcon column="partName"/>
-                                            </ResizableTh>
-                                            <ResizableTh onClick={() => handleSort('level')} width={colWidths.lvl} onResize={w=>setColWidths({...colWidths, lvl: w})} className="p-3 text-center cursor-pointer hover:bg-slate-100">
-                                                Level <SortIcon column="level"/>
-                                            </ResizableTh>
-                                            <ResizableTh onClick={() => handleSort('reuse')} width={colWidths.reuse} onResize={w=>setColWidths({...colWidths, reuse: w})} className="p-3 text-center cursor-pointer hover:bg-slate-100">
-                                                Type <SortIcon column="reuse"/>
-                                            </ResizableTh>
-                                            <ResizableTh onClick={() => handleSort('reqQty')} width={colWidths.req} onResize={w=>setColWidths({...colWidths, req: w})} className="p-3 cursor-pointer hover:bg-slate-100">
-                                                Required <SortIcon column="reqQty"/>
-                                            </ResizableTh>
-                                            <ResizableTh onClick={() => handleSort('onHand')} width={colWidths.oh} onResize={w=>setColWidths({...colWidths, oh: w})} className="p-3 cursor-pointer hover:bg-slate-100">
-                                                On Hand <SortIcon column="onHand"/>
-                                            </ResizableTh>
-                                            <ResizableTh onClick={() => handleSort('diff')} width={colWidths.diff} onResize={w=>setColWidths({...colWidths, diff: w})} className="p-3 cursor-pointer hover:bg-slate-100">
-                                                Diff <SortIcon column="diff"/>
-                                            </ResizableTh>
-                                            <ResizableTh onClick={() => handleSort('status')} width={colWidths.status} onResize={w=>setColWidths({...colWidths, status: w})} className="p-3 text-center cursor-pointer hover:bg-slate-100">
-                                                Status <SortIcon column="status"/>
-                                            </ResizableTh>
-                                        </tr>
-                                    </thead>
-                                    <tbody className="divide-y divide-slate-100">
-                                        {sortedSummary && sortedSummary.map((item, i) => (
-                                            <tr key={i} className={`hover:bg-slate-50 ${item.status==='SHORT'?'bg-red-50':''}`}>
-                                                <td className="p-3 text-slate-400 text-xs text-center align-top">{i+1}</td>
-                                                <td className="p-3 align-top font-bold text-blue-700 break-words">{item.partNo}</td>
-                                                <td className="p-3 align-top text-[10px] text-slate-500 whitespace-normal break-words">{item.partName}</td>
-                                                <td className="p-3 align-top text-center"><span className={`px-2 py-1 rounded text-[10px] font-bold border ${item.level===1?'bg-purple-100 text-purple-700 border-purple-200':'bg-slate-100 text-slate-500 border-slate-200'}`}>{item.level}</span></td>
-                                                <td className="p-3 align-top text-center">
-                                                    <span className={`text-[10px] px-2 py-0.5 rounded border whitespace-nowrap ${item.reuse === 'New' ? 'bg-blue-50 text-blue-600 border-blue-100' : item.reuse === 'Reuse' ? 'bg-orange-50 text-orange-600 border-orange-100' : 'bg-slate-50 text-slate-500 border-slate-100'}`}>
-                                                        {item.reuse}
-                                                    </span>
-                                                </td>
-                                                <td className="p-3 align-top font-bold">
-                                                    <div className="flex items-center gap-2">
-                                                        {formatNum(item.reqQty)}
-                                                        <button onClick={()=>setBreakdownItem(item)} className="text-slate-400 hover:text-blue-500 transition"><Icons.Search/></button>
-                                                    </div>
-                                                </td>
-                                                <td className="p-3 align-top text-slate-500">{formatNum(item.onHand)}</td>
-                                                <td className={`p-3 align-top font-bold ${item.diff<0?'text-red-600':'text-green-600'}`}>{item.diff>0?'+':''}{formatNum(item.diff)}</td>
-                                                <td className="p-3 align-top text-center">{item.status==='SHORT'?<span className="bg-red-100 text-red-700 px-2 py-1 rounded text-[10px] font-bold">Shortage</span>:<span className="bg-green-100 text-green-700 px-2 py-1 rounded text-[10px] font-bold">Allocated</span>}</td>
-                                            </tr>
-                                        ))}
-                                    </tbody>
-                                </table>
+                                <div className="p-4 border-t bg-white flex justify-end gap-3"><button onClick={()=>setShowConfirmModal(false)} className="px-6 py-2 rounded-xl text-slate-500 font-bold hover:bg-slate-100">Cancel</button><button onClick={handleCalculateFinal} className="px-8 py-2 rounded-xl bg-blue-600 text-white font-bold hover:bg-blue-700 shadow-lg">Confirm & Run</button></div>
                             </div>
                         </div>
                     )}
 
-                    {/* Breakdown Modal */}
                     {breakdownItem && (
                         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 modal-overlay animate-fade-in" onClick={()=>setBreakdownItem(null)}>
                             <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden" onClick={e=>e.stopPropagation()}>
-                                <div className="p-4 border-b bg-slate-50 flex justify-between items-center">
-                                    <div>
-                                        <h3 className="font-bold text-lg text-slate-800">Usage Breakdown</h3>
-                                        <div className="text-xs text-blue-600 font-bold">{breakdownItem.partNo}</div>
-                                    </div>
-                                    <button onClick={()=>setBreakdownItem(null)} className="text-slate-400 hover:text-slate-600"><Icons.Trash className="fa-xmark"/></button>
-                                </div>
-                                <div className="p-4 max-h-[60vh] overflow-y-auto space-y-2">
-                                    {breakdownItem.breakdown.map((b, i) => (
-                                        <div key={i} className="flex justify-between items-center p-3 bg-slate-50 rounded-xl border border-slate-100">
-                                            <div>
-                                                <div className="font-bold text-slate-700 text-sm flex items-center gap-2">
-                                                    <Icons.Excel className="text-green-600"/> {b.sheetMatched}
-                                                </div>
-                                                <div className="text-[10px] text-slate-400 pl-5">Original Input: {b.model}</div>
-                                            </div>
-                                            <div className="text-right">
-                                                <div className="text-[10px] text-slate-400 mb-0.5">{b.orderQty} orders × {b.perUnit}</div>
-                                                <div className="font-bold text-blue-600 text-sm">{formatNum(b.total)}</div>
-                                            </div>
-                                        </div>
-                                    ))}
-                                </div>
-                                <div className="p-4 border-t bg-slate-50 text-center">
-                                    <button onClick={()=>setBreakdownItem(null)} className="w-full py-2 bg-white border border-slate-200 text-slate-600 font-bold rounded-xl hover:bg-slate-100 text-sm">Close</button>
-                                </div>
+                                <div className="p-4 border-b bg-slate-50 flex justify-between items-center"><div><h3 className="font-bold text-lg text-slate-800">Usage Breakdown</h3><div className="text-xs text-blue-600 font-bold">{breakdownItem.partNo}</div></div><button onClick={()=>setBreakdownItem(null)} className="text-slate-400 hover:text-slate-600"><Icons.Trash className="fa-xmark"/></button></div>
+                                <div className="p-4 max-h-[60vh] overflow-y-auto space-y-2">{breakdownItem.breakdown.map((b, i) => (<div key={i} className="flex justify-between items-center p-3 bg-slate-50 rounded-xl border border-slate-100"><div><div className="font-bold text-slate-700 text-sm flex items-center gap-2"><Icons.Excel className="text-green-600"/> {b.sheetMatched}</div><div className="text-[10px] text-slate-400 pl-5">Original Input: {b.model}</div></div><div className="text-right"><div className="text-[10px] text-slate-400 mb-0.5">{b.orderQty} orders × {b.perUnit}</div><div className="font-bold text-blue-600 text-sm">{formatNum(b.total)}</div></div></div>))}</div>
+                                <div className="p-4 border-t bg-slate-50 text-center"><button onClick={()=>setBreakdownItem(null)} className="w-full py-2 bg-white border border-slate-200 text-slate-600 font-bold rounded-xl hover:bg-slate-100 text-sm">Close</button></div>
                             </div>
                         </div>
                     )}
                 </div>
             );
         };
-
+        
         const HistoryView = ({ transactions }) => {
-            const [colWidths, setColWidths] = useState({
-                date: 150, type: 80, partNo: 150, qty: 100, refDoc: 120
-            });
-
-            const handleExport = () => {
-                const data = transactions.map(tx => ({
-                    "Date": new Date(tx.date).toLocaleString(),
-                    "Type": tx.type,
-                    "Part No": tx.partNo,
-                    "Quantity": tx.qty,
-                    "Ref Doc": tx.refDoc,
-                    "Note": tx.note
-                }));
-                exportToExcel(data, "Transaction_Log");
-            };
-
+            const [colWidths, setColWidths] = useState({ date: 150, type: 80, partNo: 150, qty: 100, refDoc: 120 });
+            const handleExport = () => { const data = transactions.map(tx => ({ "Date": new Date(tx.date).toLocaleString(), "Type": tx.type, "Part No": tx.partNo, "Quantity": tx.qty, "Ref Doc": tx.refDoc, "Note": tx.note })); exportToExcel(data, "Transaction_Log"); };
             return (
                 <div className="animate-fade-in max-w-5xl mx-auto h-full flex flex-col">
-                    <div className="flex justify-between items-center mb-6">
-                        <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><Icons.History className="text-slate-600"/> Transaction History</h2>
-                        <button onClick={handleExport} className="bg-emerald-600 text-white px-3 py-2 rounded-lg text-sm font-bold shadow-md hover:bg-emerald-700 whitespace-nowrap"><Icons.Download/> Export Log</button>
-                    </div>
-                     <div className="flex-1 bg-white rounded-2xl shadow-sm border overflow-hidden flex flex-col">
-                        <div className="overflow-auto max-h-[calc(100vh-200px)] relative">
-                            <table className="w-max text-sm text-left table-fixed">
-                                <thead className="bg-slate-50 text-slate-500 font-bold text-xs uppercase sticky top-0 z-20 shadow-sm">
-                                    <tr>
-                                        <ResizableTh width={colWidths.date} onResize={w=>setColWidths({...colWidths, date: w})} className="p-4">Date/Time</ResizableTh>
-                                        <ResizableTh width={colWidths.type} onResize={w=>setColWidths({...colWidths, type: w})} className="p-4">Type</ResizableTh>
-                                        <ResizableTh width={colWidths.partNo} onResize={w=>setColWidths({...colWidths, partNo: w})} className="p-4">Part No</ResizableTh>
-                                        <ResizableTh width={colWidths.qty} onResize={w=>setColWidths({...colWidths, qty: w})} className="p-4 text-right">Qty</ResizableTh>
-                                        <ResizableTh width={colWidths.refDoc} onResize={w=>setColWidths({...colWidths, refDoc: w})} className="p-4">Ref Doc</ResizableTh>
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y divide-slate-100">
-                                    {transactions.map(tx => (
-                                        <tr key={tx.id} className="hover:bg-slate-50">
-                                            <td className="p-4 text-slate-500 font-mono text-xs">{new Date(tx.date).toLocaleString()}</td>
-                                            <td className="p-4"><span className={`px-2 py-1 rounded text-[10px] font-bold ${tx.type==='IN'?'bg-green-100 text-green-700':tx.type==='OUT'?'bg-red-100 text-red-700':'bg-orange-100 text-orange-700'}`}>{tx.type}</span></td>
-                                            <td className="p-4 font-bold text-slate-700">{tx.partNo}</td>
-                                            <td className="p-4 text-right font-mono">{formatNum(tx.qty)}</td>
-                                            <td className="p-4 text-slate-500 text-xs">{tx.refDoc || '-'}</td>
-                                        </tr>
-                                    ))}
-                                    {transactions.length === 0 && <tr><td colSpan="5" className="p-8 text-center text-slate-400">ยังไม่มีรายการ</td></tr>}
-                                </tbody>
-                            </table>
-                        </div>
-                     </div>
+                    <div className="flex justify-between items-center mb-6"><h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><Icons.History className="text-slate-600"/> Transaction History</h2><button onClick={handleExport} className="bg-emerald-600 text-white px-3 py-2 rounded-lg text-sm font-bold shadow-md hover:bg-emerald-700 whitespace-nowrap"><Icons.Download/> Export Log</button></div>
+                     <div className="flex-1 bg-white rounded-2xl shadow-sm border overflow-hidden flex flex-col"><div className="overflow-auto max-h-[calc(100vh-200px)] relative"><table className="w-max text-sm text-left table-fixed"><thead className="bg-slate-50 text-slate-500 font-bold text-xs uppercase sticky top-0 z-20 shadow-sm"><tr><ResizableTh width={colWidths.date} onResize={w=>setColWidths({...colWidths, date: w})} className="p-4">Date/Time</ResizableTh><ResizableTh width={colWidths.type} onResize={w=>setColWidths({...colWidths, type: w})} className="p-4">Type</ResizableTh><ResizableTh width={colWidths.partNo} onResize={w=>setColWidths({...colWidths, partNo: w})} className="p-4">Part No</ResizableTh><ResizableTh width={colWidths.qty} onResize={w=>setColWidths({...colWidths, qty: w})} className="p-4 text-right">Qty</ResizableTh><ResizableTh width={colWidths.refDoc} onResize={w=>setColWidths({...colWidths, refDoc: w})} className="p-4">Ref Doc</ResizableTh></tr></thead><tbody className="divide-y divide-slate-100">{transactions.map(tx => (<tr key={tx.id} className="hover:bg-slate-50"><td className="p-4 text-slate-500 font-mono text-xs">{new Date(tx.date).toLocaleString()}</td><td className="p-4"><span className={`px-2 py-1 rounded text-[10px] font-bold ${tx.type==='IN'?'bg-green-100 text-green-700':tx.type==='OUT'?'bg-red-100 text-red-700':'bg-orange-100 text-orange-700'}`}>{tx.type}</span></td><td className="p-4 font-bold text-slate-700">{tx.partNo}</td><td className="p-4 text-right font-mono">{formatNum(tx.qty)}</td><td className="p-4 text-slate-500 text-xs">{tx.refDoc || '-'}</td></tr>))}{transactions.length === 0 && <tr><td colSpan="5" className="p-8 text-center text-slate-400">ยังไม่มีรายการ</td></tr>}</tbody></table></div></div>
                 </div>
             );
         };
