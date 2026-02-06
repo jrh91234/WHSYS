@@ -21,9 +21,9 @@
         .smooth-scroll { -webkit-overflow-scrolling: touch; }
         
         /* Custom Scrollbar */
-        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar { width: 10px; height: 10px; }
         ::-webkit-scrollbar-track { background: #f1f5f9; }
-        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 5px; border: 2px solid #f1f5f9; }
         ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
         
         /* Loading Spinner */
@@ -127,7 +127,7 @@
 
             return (
                 <th className={`relative ${className} bg-slate-50`} style={{ width: width, minWidth: width, maxWidth: width }}>
-                    <div className="flex items-center h-full w-full relative z-10">
+                    <div className="flex items-center justify-center h-full w-full relative z-10">
                         {children}
                     </div>
                     <div 
@@ -837,6 +837,9 @@
             const [levelCol, setLevelCol] = useState(-1);
             const [qtyCol, setQtyCol] = useState(-1);
             const [reuseCol, setReuseCol] = useState(-1);
+            
+            // Dynamic column widths for BOM Config Table
+            const [bomColWidths, setBomColWidths] = useState({});
 
             const [orders, setOrders] = useState([]);
             const [orderText, setOrderText] = useState("");
@@ -1124,26 +1127,36 @@
                                     <div className="flex gap-2 overflow-x-auto pb-2 mb-2">
                                         {sheetNames.map(name => <button key={name} onClick={()=>setCurrentPreviewSheet(name)} className={`px-3 py-1 rounded-full text-xs border whitespace-nowrap ${currentPreviewSheet===name?'bg-blue-600 text-white':'bg-white'}`}>{name}</button>)}
                                     </div>
-                                    <div className="overflow-auto border rounded-xl max-h-[400px]">
-                                        <table className="w-full text-xs text-left">
+                                    <div className="overflow-auto border rounded-xl max-h-[500px] w-full">
+                                        <table className="min-w-full text-xs text-left border-collapse">
                                             <thead className="sticky top-0 bg-white shadow-sm z-10">
-                                                <tr><th className="p-2 bg-slate-50 w-8">#</th>{allSheets[currentPreviewSheet]?.[headerRowIndex]?.map((h, i) => (
-                                                    <th key={i} className="p-2 border-r min-w-[100px] text-center bg-white">
-                                                        <div className="flex gap-1 justify-center mb-1">
-                                                            <button onClick={()=>setPartNoCol(i)} className={`px-1.5 py-0.5 border rounded text-[9px] ${i===partNoCol?'bg-red-500 text-white':'bg-white text-slate-400'}`}>P#</button>
-                                                            <button onClick={()=>setQtyCol(i)} className={`px-1.5 py-0.5 border rounded text-[9px] ${i===qtyCol?'bg-sky-500 text-white':'bg-white text-slate-400'}`}>Qty</button>
-                                                            <button onClick={()=>setLevelCol(i)} className={`px-1.5 py-0.5 border rounded text-[9px] ${i===levelCol?'bg-purple-500 text-white':'bg-white text-slate-400'}`}>Lvl</button>
-                                                            <button onClick={()=>setReuseCol(i)} className={`px-1.5 py-0.5 border rounded text-[9px] ${i===reuseCol?'bg-orange-500 text-white':'bg-white text-slate-400'}`}>Type</button>
-                                                        </div>
-                                                        <div className="truncate text-[10px] font-bold text-slate-700" title={h}>{h||`Col ${i}`}</div>
-                                                    </th>
-                                                ))}</tr>
+                                                <tr>
+                                                    <th className="p-3 w-10 text-center bg-slate-50 border-b border-r">#</th>
+                                                    {allSheets[currentPreviewSheet]?.[headerRowIndex]?.map((h, i) => (
+                                                        <ResizableTh 
+                                                            key={i} 
+                                                            width={bomColWidths[i] || 150} 
+                                                            onResize={w => setBomColWidths(prev => ({...prev, [i]: w}))}
+                                                            className="p-2 border-b border-r text-center bg-white relative group"
+                                                        >
+                                                            <div className="flex flex-col gap-1 w-full">
+                                                                 <div className="grid grid-cols-2 gap-1 mb-1">
+                                                                     <button onClick={()=>setPartNoCol(i)} className={`px-1 py-0.5 border rounded text-[9px] ${i===partNoCol?'bg-red-500 text-white':'bg-white text-slate-400 hover:bg-slate-50'}`}>P#</button>
+                                                                     <button onClick={()=>setQtyCol(i)} className={`px-1 py-0.5 border rounded text-[9px] ${i===qtyCol?'bg-sky-500 text-white':'bg-white text-slate-400 hover:bg-slate-50'}`}>Qty</button>
+                                                                     <button onClick={()=>setLevelCol(i)} className={`px-1 py-0.5 border rounded text-[9px] ${i===levelCol?'bg-purple-500 text-white':'bg-white text-slate-400 hover:bg-slate-50'}`}>Lvl</button>
+                                                                     <button onClick={()=>setReuseCol(i)} className={`px-1 py-0.5 border rounded text-[9px] ${i===reuseCol?'bg-orange-500 text-white':'bg-white text-slate-400 hover:bg-slate-50'}`}>Type</button>
+                                                                 </div>
+                                                                 <div className="font-bold text-slate-700 truncate px-1" title={h}>{h||`Col ${i}`}</div>
+                                                            </div>
+                                                        </ResizableTh>
+                                                    ))}
+                                                </tr>
                                             </thead>
                                             <tbody>
                                                 {allSheets[currentPreviewSheet]?.slice(0, 15).map((row, ri) => (
                                                     <tr key={ri} className={`border-b ${ri===headerRowIndex?'bg-slate-800 text-white':''}`}>
-                                                        <td className="p-2 text-center text-slate-300">{ri+1}</td>
-                                                        {row.map((cell, ci) => <td key={ci} className={`p-2 border-r truncate max-w-[100px] ${ci===partNoCol?'text-red-600 font-bold':''} ${ci===qtyCol?'text-sky-600 font-bold':''} ${ci===levelCol?'text-purple-600 font-bold':''} ${ci===reuseCol?'text-orange-600 font-bold':''}`}>{cell}</td>)}
+                                                        <td className="p-2 text-center text-slate-300 border-r">{ri+1}</td>
+                                                        {row.map((cell, ci) => <td key={ci} className={`p-2 border-r truncate max-w-[150px] ${ci===partNoCol?'text-red-600 font-bold':''} ${ci===qtyCol?'text-sky-600 font-bold':''} ${ci===levelCol?'text-purple-600 font-bold':''} ${ci===reuseCol?'text-orange-600 font-bold':''}`}>{cell}</td>)}
                                                     </tr>
                                                 ))}
                                             </tbody>
