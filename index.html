@@ -20,11 +20,12 @@
         .modal-overlay { background-color: rgba(0, 0, 0, 0.5); backdrop-filter: blur(2px); }
         .smooth-scroll { -webkit-overflow-scrolling: touch; }
         
-        /* Custom Scrollbar */
-        ::-webkit-scrollbar { width: 10px; height: 10px; }
-        ::-webkit-scrollbar-track { background: #f1f5f9; }
-        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 5px; border: 2px solid #f1f5f9; }
-        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        /* Custom Scrollbar - Visible & Easy to grab */
+        ::-webkit-scrollbar { width: 12px; height: 12px; }
+        ::-webkit-scrollbar-track { background: #f1f5f9; border-radius: 6px; }
+        ::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 6px; border: 2px solid #f1f5f9; }
+        ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+        ::-webkit-scrollbar-corner { background: #f1f5f9; }
         
         /* Loading Spinner */
         .loader { border: 3px solid #f3f3f3; border-radius: 50%; border-top: 3px solid #3498db; width: 20px; height: 20px; -webkit-animation: spin 2s linear infinite; animation: spin 2s linear infinite; }
@@ -754,7 +755,7 @@
                     </div>
                     <div className="flex-1 bg-white rounded-2xl shadow-sm border overflow-hidden flex flex-col">
                         <div className="overflow-auto max-h-[calc(100vh-200px)] relative">
-                            <table className="w-full text-sm text-left table-fixed">
+                            <table className="w-max text-sm text-left border-collapse whitespace-nowrap">
                                 <thead className="bg-slate-50 text-slate-500 uppercase font-bold text-xs sticky top-0 z-20 shadow-sm">
                                     <tr>
                                         <ResizableTh width={colWidths.partNo} onResize={w => setColWidths({...colWidths, partNo: w})} className="p-4">Part No</ResizableTh>
@@ -1127,8 +1128,8 @@
                                     <div className="flex gap-2 overflow-x-auto pb-2 mb-2">
                                         {sheetNames.map(name => <button key={name} onClick={()=>setCurrentPreviewSheet(name)} className={`px-3 py-1 rounded-full text-xs border whitespace-nowrap ${currentPreviewSheet===name?'bg-blue-600 text-white':'bg-white'}`}>{name}</button>)}
                                     </div>
-                                    <div className="overflow-auto border rounded-xl max-h-[500px] w-full">
-                                        <table className="min-w-full text-xs text-left border-collapse">
+                                    <div className="overflow-scroll border rounded-xl max-h-[500px] w-full relative">
+                                        <table className="w-max text-xs text-left border-collapse whitespace-nowrap">
                                             <thead className="sticky top-0 bg-white shadow-sm z-10">
                                                 <tr>
                                                     <th className="p-3 w-10 text-center bg-slate-50 border-b border-r">#</th>
@@ -1221,7 +1222,7 @@
                                                 <button onClick={handleExportCompare} className="text-xs bg-emerald-100 text-emerald-700 px-3 py-1 rounded font-bold hover:bg-emerald-200"><Icons.Download/> Export Excel</button>
                                             </div>
                                             <div className="overflow-auto border rounded-xl max-h-[500px]">
-                                                <table className="w-full text-sm text-left table-fixed">
+                                                <table className="w-max text-sm text-left table-fixed">
                                                     <thead className="bg-slate-50 text-slate-500 font-bold text-xs uppercase sticky top-0 z-20 shadow-sm">
                                                         <tr>
                                                             <ResizableTh width={compColWidths.partNo} onResize={w=>setCompColWidths({...compColWidths, partNo: w})} className="p-3">Part No</ResizableTh>
@@ -1265,7 +1266,7 @@
                                 </div>
                             </div>
                             <div className="overflow-auto border rounded-xl max-h-[500px]">
-                                <table className="w-full text-sm text-left table-fixed">
+                                <table className="w-max text-sm text-left table-fixed">
                                     <thead className="bg-slate-100 text-slate-600 font-bold text-xs uppercase sticky top-0 z-20 shadow-sm">
                                         <tr>
                                             <ResizableTh width={colWidths.id} onResize={w=>setColWidths({...colWidths, id: w})} className="p-3">#</ResizableTh>
@@ -1401,7 +1402,7 @@
                     </div>
                      <div className="flex-1 bg-white rounded-2xl shadow-sm border overflow-hidden flex flex-col">
                         <div className="overflow-auto max-h-[calc(100vh-200px)] relative">
-                            <table className="w-full text-sm text-left table-fixed">
+                            <table className="w-max text-sm text-left table-fixed">
                                 <thead className="bg-slate-50 text-slate-500 font-bold text-xs uppercase sticky top-0 z-20 shadow-sm">
                                     <tr>
                                         <ResizableTh width={colWidths.date} onResize={w=>setColWidths({...colWidths, date: w})} className="p-4">Date/Time</ResizableTh>
