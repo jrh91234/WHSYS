@@ -67,6 +67,7 @@
         const { useState, useEffect, useMemo, useRef } = React;
 
         // --- Configuration ---
+        const ADMIN_PASS = "1111"; 
         const STORAGE_KEY_INV = "nlc_erp_inventory";
         const STORAGE_KEY_TRANS = "nlc_erp_transactions";
         const STORAGE_KEY_API_URL = "nlc_erp_api_url";
@@ -75,7 +76,7 @@
 
         // *** ใส่ URL ของ Google Apps Script ที่นี่ เพื่อให้ใช้งานบนมือถือได้ทันที ***
         // เช่น const DEFAULT_API_URL = "https://script.google.com/macros/s/AKfycb.../exec";
-        const DEFAULT_API_URL = "https://script.google.com/macros/s/AKfycbxg5wvKaH_JCCGAg1GmN_Hic9Pcuav63swUb5uQOn_C63wfw0bA_7-tTUIWyY0u5CFR/exec"; 
+        const DEFAULT_API_URL = ""; 
         
         const INITIAL_INVENTORY = [
             { partNo: "DEMO-001", name: "Demo Item (Local)", qty: 100, location: "A1", unit: "PCS", minStock: 20 }
@@ -739,9 +740,10 @@
             });
 
             const filteredInv = inventory.filter(i => {
-                const term = search.toLowerCase();
-                return (i.partNo || "").toLowerCase().includes(term) || 
-                       (i.name || "").toLowerCase().includes(term);
+                const term = search.toLowerCase().trim();
+                if (!term) return true;
+                return String(i.partNo || "").toLowerCase().includes(term) || 
+                       String(i.name || "").toLowerCase().includes(term);
             });
             
             const openModal = (mode, item) => {
@@ -764,9 +766,9 @@
                 
                 if (val && modalMode === 'ADD_NEW') {
                     const matches = inventory.filter(i => {
-                        const term = val.toLowerCase();
-                        return (i.partNo || "").toLowerCase().includes(term) || 
-                               (i.name || "").toLowerCase().includes(term);
+                        const term = val.toLowerCase().trim();
+                        return String(i.partNo || "").toLowerCase().includes(term) || 
+                               String(i.name || "").toLowerCase().includes(term);
                     });
                     setSuggestions(matches.slice(0, 5));
                     setShowSuggestions(true);
@@ -851,21 +853,30 @@
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-slate-100">
-                                    {filteredInv.map(item => (
-                                        <tr key={item.partNo} className="hover:bg-slate-50">
-                                            <td className="p-4 font-mono font-bold text-blue-700 align-top break-words">{item.partNo}</td>
-                                            <td className="p-4 whitespace-normal align-top text-slate-600 break-words min-w-[200px]">{item.name}</td>
-                                            <td className="p-4 text-center align-top"><span className="bg-slate-100 px-2 py-1 rounded text-xs">{item.location}</span></td>
-                                            <td className="p-4 text-right align-top">
-                                                <div className={`font-bold ${item.qty<=item.minStock?'text-red-600':'text-slate-800'}`}>{formatNum(item.qty)}</div>
-                                            </td>
-                                            <td className="p-4 text-center flex justify-center gap-2 align-top">
-                                                <button onClick={()=>openModal('IN', item)} className="p-1.5 bg-green-100 text-green-600 rounded hover:bg-green-200" title="รับเข้า"><Icons.Plus/></button>
-                                                <button onClick={()=>openModal('OUT', item)} className="p-1.5 bg-red-100 text-red-600 rounded hover:bg-red-200" title="เบิกออก"><Icons.Minus/></button>
-                                                <button onClick={()=>handleDeleteClick(item)} className="p-1.5 bg-slate-100 text-slate-500 rounded hover:bg-slate-200 hover:text-red-500" title="ลบรายการ"><Icons.Trash/></button>
+                                    {filteredInv.length > 0 ? (
+                                        filteredInv.map(item => (
+                                            <tr key={item.partNo} className="hover:bg-slate-50">
+                                                <td className="p-4 font-mono font-bold text-blue-700 align-top break-words">{item.partNo}</td>
+                                                <td className="p-4 whitespace-normal align-top text-slate-600 break-words min-w-[200px]">{item.name}</td>
+                                                <td className="p-4 text-center align-top"><span className="bg-slate-100 px-2 py-1 rounded text-xs">{item.location}</span></td>
+                                                <td className="p-4 text-right align-top">
+                                                    <div className={`font-bold ${item.qty<=item.minStock?'text-red-600':'text-slate-800'}`}>{formatNum(item.qty)}</div>
+                                                </td>
+                                                <td className="p-4 text-center flex justify-center gap-2 align-top">
+                                                    <button onClick={()=>openModal('IN', item)} className="p-1.5 bg-green-100 text-green-600 rounded hover:bg-green-200" title="รับเข้า"><Icons.Plus/></button>
+                                                    <button onClick={()=>openModal('OUT', item)} className="p-1.5 bg-red-100 text-red-600 rounded hover:bg-red-200" title="เบิกออก"><Icons.Minus/></button>
+                                                    <button onClick={()=>handleDeleteClick(item)} className="p-1.5 bg-slate-100 text-slate-500 rounded hover:bg-slate-200 hover:text-red-500" title="ลบรายการ"><Icons.Trash/></button>
+                                                </td>
+                                            </tr>
+                                        ))
+                                    ) : (
+                                        <tr>
+                                            <td colSpan="5" className="p-8 text-center text-slate-400">
+                                                <i className="fa-solid fa-box-open text-2xl mb-2"></i>
+                                                <div>ไม่พบรายการสินค้าที่ค้นหา</div>
                                             </td>
                                         </tr>
-                                    ))}
+                                    )}
                                 </tbody>
                             </table>
                         </div>
