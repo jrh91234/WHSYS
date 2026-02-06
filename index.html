@@ -276,7 +276,6 @@
                                 itemData: newItemData 
                             })
                         });
-                        // Allow some time for GAS to process before re-fetching
                         setTimeout(fetchCloudData, 1500); 
                     } catch (e) {
                         alert("Cloud Sync Error: " + e.message);
@@ -837,6 +836,7 @@
             const [partNameCol, setPartNameCol] = useState(-1);
             const [levelCol, setLevelCol] = useState(-1);
             const [qtyCol, setQtyCol] = useState(-1);
+            const [reuseCol, setReuseCol] = useState(-1);
 
             const [orders, setOrders] = useState([]);
             const [orderText, setOrderText] = useState("");
@@ -855,7 +855,7 @@
             
             // Column Widths for Result
             const [colWidths, setColWidths] = useState({
-                id: 50, partNo: 150, partName: 250, lvl: 60, req: 100, oh: 100, diff: 100, status: 120
+                id: 50, partNo: 150, partName: 250, lvl: 60, req: 100, oh: 100, diff: 100, status: 120, reuse: 80
             });
             
             // Column Widths for Compare
@@ -928,6 +928,7 @@
                             else if (c.includes('desc') || c.includes('name')) setPartNameCol(i);
                             else if (c === 'level' || c === 'lvl') setLevelCol(i);
                             else if (c === 'qty' || c === 'quantity') setQtyCol(i);
+                            else if (c.includes('reuse') || (c.includes('part') && c.includes('type')) || c.includes('status')) setReuseCol(i);
                         });
                     }
                 };
@@ -979,6 +980,7 @@
                         const qpu = parseFloat(row[qtyCol]) || 0;
                         const pName = partNameCol !== -1 ? row[partNameCol] : "";
                         const lvl = levelCol !== -1 ? parseLvl(row[levelCol]) : "-";
+                        const reuseVal = reuseCol !== -1 ? String(row[reuseCol]).trim() : "-";
                         
                         if (qpu > 0) {
                             if (!summaryMap[pNo]) {
@@ -987,11 +989,13 @@
                                     partName: pName, 
                                     level: lvl, 
                                     reqQty: 0,
+                                    reuse: new Set(),
                                     breakdown: [] // Init breakdown array
                                 };
                             }
                             const totalForThisOrder = qpu * cand.qty;
                             summaryMap[pNo].reqQty += totalForThisOrder;
+                            if (reuseVal !== "-") summaryMap[pNo].reuse.add(reuseVal);
                             
                             // Add details for breakdown
                             summaryMap[pNo].breakdown.push({
@@ -1009,7 +1013,8 @@
                     const stockItem = inventory.find(i => i.partNo === req.partNo);
                     const onHand = stockItem ? stockItem.qty : 0;
                     const diff = onHand - req.reqQty;
-                    return { ...req, onHand, diff, status: diff >= 0 ? 'OK' : 'SHORT' };
+                    const reuseDisplay = req.reuse.size > 0 ? Array.from(req.reuse).join(", ") : "-";
+                    return { ...req, onHand, diff, reuse: reuseDisplay, status: diff >= 0 ? 'OK' : 'SHORT' };
                 });
                 setFinalSummary(resultList);
                 setStep(3);
@@ -1087,7 +1092,7 @@
                 const shortage = finalSummary.filter(item => item.status === 'SHORT');
                 if(shortage.length === 0) return alert("ไม่มีรายการของขาด");
                 const data = shortage.map(item => ({
-                    "Part No": item.partNo, "Description": item.partName, "Required Qty": item.reqQty, "On Hand": item.onHand, "To Order": Math.abs(item.diff), "Unit": "PCS"
+                    "Part No": item.partNo, "Description": item.partName, "Required Qty": item.reqQty, "On Hand": item.onHand, "To Order": Math.abs(item.diff), "Unit": "PCS", "Type": item.reuse
                 }));
                 exportToExcel(data, "Purchase_Request");
             };
@@ -1128,6 +1133,7 @@
                                                             <button onClick={()=>setPartNoCol(i)} className={`px-1.5 py-0.5 border rounded text-[9px] ${i===partNoCol?'bg-red-500 text-white':'bg-white text-slate-400'}`}>P#</button>
                                                             <button onClick={()=>setQtyCol(i)} className={`px-1.5 py-0.5 border rounded text-[9px] ${i===qtyCol?'bg-sky-500 text-white':'bg-white text-slate-400'}`}>Qty</button>
                                                             <button onClick={()=>setLevelCol(i)} className={`px-1.5 py-0.5 border rounded text-[9px] ${i===levelCol?'bg-purple-500 text-white':'bg-white text-slate-400'}`}>Lvl</button>
+                                                            <button onClick={()=>setReuseCol(i)} className={`px-1.5 py-0.5 border rounded text-[9px] ${i===reuseCol?'bg-orange-500 text-white':'bg-white text-slate-400'}`}>Type</button>
                                                         </div>
                                                         <div className="truncate text-[10px] font-bold text-slate-700" title={h}>{h||`Col ${i}`}</div>
                                                     </th>
@@ -1137,14 +1143,14 @@
                                                 {allSheets[currentPreviewSheet]?.slice(0, 15).map((row, ri) => (
                                                     <tr key={ri} className={`border-b ${ri===headerRowIndex?'bg-slate-800 text-white':''}`}>
                                                         <td className="p-2 text-center text-slate-300">{ri+1}</td>
-                                                        {row.map((cell, ci) => <td key={ci} className={`p-2 border-r truncate max-w-[100px] ${ci===partNoCol?'text-red-600 font-bold':''} ${ci===qtyCol?'text-sky-600 font-bold':''} ${ci===levelCol?'text-purple-600 font-bold':''}`}>{cell}</td>)}
+                                                        {row.map((cell, ci) => <td key={ci} className={`p-2 border-r truncate max-w-[100px] ${ci===partNoCol?'text-red-600 font-bold':''} ${ci===qtyCol?'text-sky-600 font-bold':''} ${ci===levelCol?'text-purple-600 font-bold':''} ${ci===reuseCol?'text-orange-600 font-bold':''}`}>{cell}</td>)}
                                                     </tr>
                                                 ))}
                                             </tbody>
                                         </table>
                                     </div>
                                     <div className="mt-4 flex justify-between items-center bg-slate-50 p-3 rounded-lg text-xs text-slate-500">
-                                        <div>P# Col: <span className="font-bold text-red-500">{partNoCol}</span>, Qty Col: <span className="font-bold text-sky-500">{qtyCol}</span>, Lvl Col: <span className="font-bold text-purple-500">{levelCol}</span></div>
+                                        <div>P# Col: <span className="font-bold text-red-500">{partNoCol}</span>, Qty Col: <span className="font-bold text-sky-500">{qtyCol}</span>, Lvl Col: <span className="font-bold text-purple-500">{levelCol}</span>, Type Col: <span className="font-bold text-orange-500">{reuseCol}</span></div>
                                         <button onClick={()=>setStep(2)} className="bg-blue-600 text-white px-6 py-2 rounded-lg font-bold hover:bg-blue-700">Next Step</button>
                                     </div>
                                 </div>
@@ -1253,6 +1259,7 @@
                                             <ResizableTh width={colWidths.partNo} onResize={w=>setColWidths({...colWidths, partNo: w})} className="p-3">Part No</ResizableTh>
                                             <ResizableTh width={colWidths.partName} onResize={w=>setColWidths({...colWidths, partName: w})} className="p-3">Description</ResizableTh>
                                             <ResizableTh width={colWidths.lvl} onResize={w=>setColWidths({...colWidths, lvl: w})} className="p-3 text-center">Level</ResizableTh>
+                                            <ResizableTh width={colWidths.reuse} onResize={w=>setColWidths({...colWidths, reuse: w})} className="p-3 text-center">Type</ResizableTh>
                                             <ResizableTh width={colWidths.req} onResize={w=>setColWidths({...colWidths, req: w})} className="p-3">Required</ResizableTh>
                                             <ResizableTh width={colWidths.oh} onResize={w=>setColWidths({...colWidths, oh: w})} className="p-3">On Hand</ResizableTh>
                                             <ResizableTh width={colWidths.diff} onResize={w=>setColWidths({...colWidths, diff: w})} className="p-3">Diff</ResizableTh>
@@ -1266,6 +1273,11 @@
                                                 <td className="p-3 align-top font-bold text-blue-700 break-words">{item.partNo}</td>
                                                 <td className="p-3 align-top text-[10px] text-slate-500 whitespace-normal break-words">{item.partName}</td>
                                                 <td className="p-3 align-top text-center"><span className={`px-2 py-1 rounded text-[10px] font-bold border ${item.level===1?'bg-purple-100 text-purple-700 border-purple-200':'bg-slate-100 text-slate-500 border-slate-200'}`}>{item.level}</span></td>
+                                                <td className="p-3 align-top text-center">
+                                                    <span className={`text-[10px] px-2 py-0.5 rounded border whitespace-nowrap ${item.reuse === 'New' ? 'bg-blue-50 text-blue-600 border-blue-100' : item.reuse === 'Reuse' ? 'bg-orange-50 text-orange-600 border-orange-100' : 'bg-slate-50 text-slate-500 border-slate-100'}`}>
+                                                        {item.reuse}
+                                                    </span>
+                                                </td>
                                                 <td className="p-3 align-top font-bold">
                                                     <div className="flex items-center gap-2">
                                                         {formatNum(item.reqQty)}
