@@ -221,14 +221,19 @@
                     
                 } catch (error) {
                     console.error("Cloud Error:", error);
-                    alert("ไม่สามารถดึงข้อมูลจาก Cloud ได้ (ระบบจะใช้ข้อมูลล่าสุดในเครื่อง)");
+                    // alert("ไม่สามารถดึงข้อมูลจาก Cloud ได้ (ระบบจะใช้ข้อมูลล่าสุดในเครื่อง)");
                 } finally {
                     setIsLoading(false);
                 }
             };
 
             const handleLogin = () => {
-                const user = users.find(u => u.username === inputUser && u.password === inputPass);
+                // FIXED: Convert both passwords to String and Trim whitespace to prevent type mismatch (Number vs String)
+                const user = users.find(u => 
+                    String(u.username).trim() === inputUser.trim() && 
+                    String(u.password).trim() === inputPass.trim()
+                );
+
                 if (user) {
                     setCurrentUser(user);
                     setInputPass(""); // Clear password
@@ -386,6 +391,16 @@
                             </div>
                             
                             <button onClick={handleLogin} className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 transition shadow-lg mt-6">Login System</button>
+                            
+                            <div className="mt-4 text-center">
+                                {isLoading ? (
+                                    <span className="text-xs text-blue-400 flex justify-center items-center gap-2 animate-pulse"><div className="loader w-3 h-3"></div> กำลังโหลดข้อมูลผู้ใช้จาก Cloud...</span>
+                                ) : isCloud ? (
+                                    <span className="text-[10px] text-green-500"><i className="fa-solid fa-cloud"></i> Cloud Connected</span>
+                                ) : (
+                                    <span className="text-[10px] text-slate-400"><i className="fa-solid fa-cloud-slash"></i> Offline Mode</span>
+                                )}
+                            </div>
                         </div>
                     </div>
                 );
