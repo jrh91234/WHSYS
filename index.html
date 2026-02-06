@@ -717,6 +717,10 @@
             const [selectedItem, setSelectedItem] = useState(null);
             const [form, setForm] = useState({ partNo: "", name: "", qty: 0, location: "", minStock: 0, refDoc: "", note: "" });
             
+            // Smart Search States
+            const [suggestions, setSuggestions] = useState([]);
+            const [showSuggestions, setShowSuggestions] = useState(false);
+
             // Initial column widths
             const [colWidths, setColWidths] = useState({
                 partNo: 150,
@@ -727,9 +731,13 @@
             });
 
             const filteredInv = inventory.filter(i => i.partNo.toLowerCase().includes(search.toLowerCase()) || i.name.toLowerCase().includes(search.toLowerCase()));
+            
             const openModal = (mode, item) => {
                 setModalMode(mode); setSelectedItem(item);
-                if (mode === 'ADD_NEW') setForm({ partNo: "", name: "", qty: 0, location: "", minStock: 0 });
+                if (mode === 'ADD_NEW') {
+                    setForm({ partNo: "", name: "", qty: 0, location: "", minStock: 0 });
+                    setSuggestions([]);
+                }
                 else setForm({ ...form, qty: 0, refDoc: "", note: "" });
             };
             
@@ -737,9 +745,50 @@
                 openModal('DELETE', item);
             };
 
+            // Smart Input Handlers
+            const handlePartNoChange = (e) => {
+                const val = e.target.value;
+                setForm({ ...form, partNo: val });
+                
+                if (val && modalMode === 'ADD_NEW') {
+                    const matches = inventory.filter(i => 
+                        i.partNo.toLowerCase().includes(val.toLowerCase()) || 
+                        i.name.toLowerCase().includes(val.toLowerCase())
+                    );
+                    setSuggestions(matches.slice(0, 5));
+                    setShowSuggestions(true);
+                } else {
+                    setShowSuggestions(false);
+                }
+            };
+
+            const handleSelectSuggestion = (item) => {
+                setForm({
+                    ...form,
+                    partNo: item.partNo,
+                    name: item.name,
+                    location: item.location,
+                    minStock: item.minStock,
+                    qty: 0 // Reset qty
+                });
+                setShowSuggestions(false);
+            };
+
             const handleSubmit = () => {
                 if (modalMode === 'ADD_NEW') {
-                    if (inventory.some(i => i.partNo === form.partNo)) return alert("Part No ซ้ำ");
+                    // Smart Check: Duplicate
+                    const existingItem = inventory.find(i => i.partNo === form.partNo);
+                    if (existingItem) {
+                        if (confirm(`พบสินค้า "${form.partNo}" ในระบบแล้ว!\nต้องการ "รับเข้า (IN)" เพิ่มจำนวน ${form.qty} ชิ้น แทนการสร้างใหม่หรือไม่?`)) {
+                            addTransaction('IN', form.partNo, form.qty, 'ADD_EXISTING', 'Added via New Item form');
+                            setModalMode(null);
+                            return;
+                        } else {
+                            return; // User cancelled
+                        }
+                    }
+
+                    // Original logic
                     // Pass newItemData for Cloud Sync
                     addTransaction('INIT', form.partNo, form.qty, 'INIT', 'Initial Stock', {
                         partNo: form.partNo, name: form.name, qty: form.qty, location: form.location, minStock: form.minStock
@@ -830,7 +879,48 @@
                                             <p className="text-xs text-slate-400 mt-2">* ข้อมูลจะถูกลบถาวรทั้งในเครื่องและบน Cloud</p>
                                         </div>
                                     ) : (
-                                        modalMode==='ADD_NEW' ? <><input className="w-full p-2 border rounded" placeholder="Part No" value={form.partNo} onChange={e=>setForm({...form, partNo: e.target.value})}/><input className="w-full p-2 border rounded" placeholder="Name" value={form.name} onChange={e=>setForm({...form, name: e.target.value})}/><div className="flex gap-2"><input className="w-full p-2 border rounded" placeholder="Loc" value={form.location} onChange={e=>setForm({...form, location: e.target.value})}/><input type="number" className="w-full p-2 border rounded" placeholder="Min Stock" value={form.minStock} onChange={e=>setForm({...form, minStock: parseFloat(e.target.value)})}/></div><input type="number" className="w-full p-2 border rounded" placeholder="Initial Qty" value={form.qty} onChange={e=>setForm({...form, qty: parseFloat(e.target.value)})}/></> : <><div className="text-sm mb-2 font-bold text-slate-500">{selectedItem.partNo} ({formatNum(selectedItem.qty)})</div><input type="number" autoFocus className="w-full p-3 border-2 border-blue-100 rounded-xl text-center text-xl font-bold text-blue-700 outline-none" placeholder="Qty" value={form.qty||''} onChange={e=>setForm({...form, qty: parseFloat(e.target.value)})}/><input className="w-full p-2 border rounded" placeholder="Ref Doc" value={form.refDoc} onChange={e=>setForm({...form, refDoc: e.target.value})}/></>
+                                        modalMode==='ADD_NEW' ? 
+                                        <>
+                                            <div className="relative">
+                                                <label className="text-xs font-bold text-slate-500">Part No</label>
+                                                <input 
+                                                    className="w-full p-2 border rounded" 
+                                                    placeholder="Part No" 
+                                                    value={form.partNo} 
+                                                    onChange={handlePartNoChange}
+                                                    onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
+                                                    autoComplete="off"
+                                                />
+                                                {showSuggestions && suggestions.length > 0 && (
+                                                    <ul className="absolute z-10 w-full bg-white border border-gray-300 rounded-b shadow-lg max-h-40 overflow-y-auto mt-1">
+                                                        {suggestions.map(s => (
+                                                            <li key={s.partNo} 
+                                                                className="p-2 hover:bg-blue-50 cursor-pointer border-b text-sm flex justify-between items-center"
+                                                                onMouseDown={() => handleSelectSuggestion(s)}
+                                                            >
+                                                                <div>
+                                                                    <div className="font-bold text-blue-600">{s.partNo}</div>
+                                                                    <div className="text-xs text-gray-500 truncate w-40">{s.name}</div>
+                                                                </div>
+                                                                <div className="text-xs bg-slate-100 px-2 py-1 rounded">Stock: {formatNum(s.qty)}</div>
+                                                            </li>
+                                                        ))}
+                                                    </ul>
+                                                )}
+                                            </div>
+                                            <div><label className="text-xs font-bold text-slate-500">Description</label><input className="w-full p-2 border rounded" placeholder="Name" value={form.name} onChange={e=>setForm({...form, name: e.target.value})}/></div>
+                                            <div className="flex gap-2">
+                                                <div className="flex-1"><label className="text-xs font-bold text-slate-500">Location</label><input className="w-full p-2 border rounded" placeholder="Loc" value={form.location} onChange={e=>setForm({...form, location: e.target.value})}/></div>
+                                                <div className="flex-1"><label className="text-xs font-bold text-slate-500">Min Stock</label><input type="number" className="w-full p-2 border rounded" placeholder="Min" value={form.minStock} onChange={e=>setForm({...form, minStock: parseFloat(e.target.value)})}/></div>
+                                            </div>
+                                            <div><label className="text-xs font-bold text-slate-500">Initial Qty</label><input type="number" className="w-full p-2 border rounded" placeholder="Initial Qty" value={form.qty} onChange={e=>setForm({...form, qty: parseFloat(e.target.value)})}/></div>
+                                        </> 
+                                        : 
+                                        <>
+                                            <div className="text-sm mb-2 font-bold text-slate-500">{selectedItem.partNo} ({formatNum(selectedItem.qty)})</div>
+                                            <input type="number" autoFocus className="w-full p-3 border-2 border-blue-100 rounded-xl text-center text-xl font-bold text-blue-700 outline-none" placeholder="Qty" value={form.qty||''} onChange={e=>setForm({...form, qty: parseFloat(e.target.value)})}/>
+                                            <input className="w-full p-2 border rounded" placeholder="Ref Doc" value={form.refDoc} onChange={e=>setForm({...form, refDoc: e.target.value})}/>
+                                        </>
                                     )}
                                     
                                     <div className="flex gap-3 pt-2">
@@ -1006,7 +1096,8 @@
                     const data = await res.json();
                     
                     if (Object.keys(data).length === 0) {
-                        if (!isAuto) alert("No BOM sheets found on Cloud (Sheets other than Inventory/Transactions/Users)");
+                        // Suppress alert if auto-loading, or keep it subtle?
+                        // alert("No BOM sheets found on Cloud (Sheets other than Inventory/Transactions/Users)");
                         return;
                     }
 
