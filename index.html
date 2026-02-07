@@ -310,7 +310,6 @@
                 }
             };
 
-            // ... (addTransaction, deleteItem, saveUser, deleteUser - Same as before)
             const addTransaction = async (type, partNo, qty, refDoc, note, newItemData = null) => {
                 const newTx = { id: Date.now().toString(), date: new Date().toISOString(), type, partNo, qty: parseFloat(qty), refDoc, note, user: currentUser?.name || 'Unknown' };
                 setTransactions(prev => [newTx, ...prev]);
@@ -330,16 +329,19 @@
                     try { await fetch(apiUrl, { method: "POST", mode: "no-cors", headers: { "Content-Type": "text/plain" }, body: JSON.stringify({ action: "add_transaction", data: newTx, itemData: newItemData }) }); } catch (e) { console.error(e); }
                 }
             };
+
             const deleteItem = async (partNo) => {
                  const newInv = inventory.filter(i => i.partNo !== partNo); setInventory(newInv);
                  if (isCloud && apiUrl) { await fetch(apiUrl, { method: "POST", mode: "no-cors", headers: { "Content-Type": "text/plain" }, body: JSON.stringify({ action: "delete_item", partNo: partNo }) }); } else { addTransaction('ADJUST', partNo, 0, 'DELETE', 'Deleted locally'); }
             };
+
             const saveUser = async (user) => {
                 let newUsers = [...users]; const isNew = !user.id;
                 if (isNew) { if (users.some(u => u.username === user.username)) return alert("Username already exists"); user.id = Date.now(); newUsers.push(user); } else { newUsers = newUsers.map(u => u.id === user.id ? { ...u, ...user } : u); }
                 setUsers(newUsers); 
                 if (isCloud && apiUrl) { try { await fetch(apiUrl, { method: "POST", mode: "no-cors", headers: { "Content-Type": "text/plain" }, body: JSON.stringify({ action: "save_user", user: user }) }); } catch (e) { console.error(e); } }
             };
+
             const deleteUser = async (id) => {
                 setUsers(users.filter(u => u.id !== id));
                 if (isCloud && apiUrl) { try { await fetch(apiUrl, { method: "POST", mode: "no-cors", headers: { "Content-Type": "text/plain" }, body: JSON.stringify({ action: "delete_user", id: id }) }); } catch (e) { console.error(e); } }
@@ -375,7 +377,6 @@
                             <SidebarItem icon="History" label="ประวัติ (History)" active={currentView==='history'} onClick={()=>setCurrentView('history')} />
                             <div className="pt-4 mt-4 border-t border-slate-800"><SidebarItem icon="Settings" label="ตั้งค่า (Settings)" active={currentView==='settings'} onClick={()=>setCurrentView('settings')} /></div>
                         </nav>
-                        <div className="p-4 bg-slate-800 text-[10px] text-center text-slate-500">{isCloud ? <span className="text-green-400"><Icons.Cloud/> Cloud Connected</span> : <span className="text-slate-400"><Icons.CloudOff/> Local Mode</span>}</div>
                         <div className="p-4 border-t border-slate-800"><button onClick={()=>setCurrentUser(null)} className="w-full py-2 px-4 rounded bg-slate-800 text-xs font-bold hover:bg-red-900 hover:text-white transition flex items-center justify-center gap-2"><i className="fa-solid fa-power-off"></i> Logout</button></div>
                     </aside>
 
@@ -408,7 +409,7 @@
         const SidebarItem = ({ icon, label, active, onClick }) => { const Icon = Icons[icon]; return <button onClick={onClick} className={`w-full text-left px-4 py-3 rounded-xl flex items-center gap-3 text-sm font-medium sidebar-link ${active ? 'active' : 'hover:text-white hover:bg-slate-800'}`}><Icon className={active ? 'text-blue-400' : 'text-slate-500'} /> {label}</button>; };
         const MobileNavItem = ({ icon, label, active, onClick }) => { const Icon = Icons[icon]; return <button onClick={onClick} className={`flex flex-col items-center gap-1 p-2 rounded-lg ${active ? 'text-blue-600 bg-blue-50' : ''}`}><Icon className="text-lg" /> <span>{label}</span></button>; };
 
-        // ... SettingsView, DashboardView, InventoryView ...
+        // --- VIEWS ---
         const SettingsView = ({ apiUrl, setApiUrl, setIsCloud, setIsLoading, users, onSaveUser, onDeleteUser, currentUser }) => {
             const [urlInput, setUrlInput] = useState(apiUrl);
             const [userForm, setUserForm] = useState({ id: null, username: '', password: '', name: '', role: 'STAFF' });
@@ -466,6 +467,7 @@
                 </div>
             );
         };
+
         const DashboardView = ({ inventory, transactions, toInventory }) => {
             const lowStockItems = inventory.filter(i => i.qty <= (i.minStock || 0));
             const totalQty = inventory.reduce((sum, i) => sum + i.qty, 0);
@@ -564,6 +566,8 @@
             const [sheetNames, setSheetNames] = useState([]);
             const [currentPreviewSheet, setCurrentPreviewSheet] = useState("");
             const [mode, setMode] = useState('plan'); 
+            const [hasAutoLoaded, setHasAutoLoaded] = useState(false);
+            const [isBomLoading, setIsBomLoading] = useState(false);
             
             const [headerRowIndex, setHeaderRowIndex] = useState(-1);
             const [partNoCol, setPartNoCol] = useState(-1);
@@ -629,7 +633,7 @@
             const calculateFuzzyScore = (inputTokens, targetTokens) => { if (inputTokens.length === 0 || targetTokens.length === 0) return 0; let totalMaxSim = 0; const matches = []; inputTokens.forEach(inToken => { let maxSim = 0; let bestMatchToken = null; targetTokens.forEach(targetToken => { const sim = getSimilarity(inToken, targetToken); if (sim > maxSim) { maxSim = sim; bestMatchToken = targetToken; } }); if(bestMatchToken) { const inIsNum = !isNaN(inToken); const tarIsNum = !isNaN(bestMatchToken); if(inIsNum !== tarIsNum) maxSim *= 0.5; } totalMaxSim += maxSim; matches.push({ token: inToken, match: bestMatchToken, similarity: maxSim }); }); const score = totalMaxSim / inputTokens.length; const lengthRatio = Math.min(inputTokens.length, targetTokens.length) / Math.max(inputTokens.length, targetTokens.length); return { score: score * 0.9 + lengthRatio * 0.1, matches }; };
             const findSmartMatch = (inputModel, sheets) => { const input = inputModel.trim().toUpperCase(); const inputTokens = tokenize(input); const candidates = sheets.map(name => { const targetTokens = tokenize(name); const { score, matches } = calculateFuzzyScore(inputTokens, targetTokens); return { name, score, targetTokens, matches }; }); const goodCandidates = candidates.filter(c => c.score > 0.4).sort((a, b) => b.score - a.score); const best = goodCandidates.length > 0 ? goodCandidates[0] : null; return { name: best ? best.name : null, score: best ? best.score : 0, tokens: inputTokens, matches: best ? best.matches : [], candidates: goodCandidates.slice(0, 5) }; };
 
-            const handleFileUpload = (e) => { const file = e.target.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = (evt) => { const workbook = XLSX.read(new Uint8Array(evt.target.result), { type: 'array' }); const sheetsData = {}; workbook.SheetNames.forEach(name => { if (name.toLowerCase() !== 'data') { sheetsData[name] = XLSX.utils.sheet_to_json(workbook.Sheets[name], { header: 1 }); } }); if(Object.keys(sheetsData).length === 0) { alert("No valid BOM sheets found (excluding 'data')."); return; } setAllSheets(sheetsData); setSheetNames(Object.keys(sheetsData)); setCurrentPreviewSheet(Object.keys(sheetsData)[0]); detectColumns(sheetsData, Object.keys(sheetsData)[0]); }; reader.readAsArrayBuffer(file); };
+            const handleFileUpload = (e) => { const file = e.target.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = (evt) => { const workbook = XLSX.read(new Uint8Array(evt.target.result), { type: 'array' }); const sheetsData = {}; workbook.SheetNames.forEach(name => { if (name.toLowerCase() !== 'data') { sheetsData[name] = XLSX.utils.sheet_to_json(workbook.Sheets[name], { header: 1 }); } }); if(Object.keys(sheetsData).length === 0) { alert("No valid BOM sheets found (excluding 'data')."); return; } setAllSheets(sheetsData); setSheetNames(Object.keys(sheetsData)); setCurrentPreviewSheet(Object.keys(sheetsData)[0]); detectColumns(sheetsData, workbook.SheetNames[0]); }; reader.readAsArrayBuffer(file); };
             
             const handleCloudLoad = async (isAuto = false) => {
                 if (!apiUrl) { if (!isAuto) alert("Please connect to Google Sheet first."); return; }
@@ -695,9 +699,15 @@
                 setShowConfirmModal(false); const summaryMap = {};
                 matchCandidates.forEach(cand => {
                     const sheetName = cand.matchedSheet; if (!sheetName) return; const data = allSheets[sheetName];
+                    const pCol = partNoCol !== -1 ? partNoCol : 1;
+                    const qCol = qtyCol !== -1 ? qtyCol : 3;
+                    const lCol = levelCol !== -1 ? levelCol : 0;
+                    const rCol = reuseCol !== -1 ? reuseCol : 5;
+                    const nCol = partNameCol !== -1 ? partNameCol : 2;
+
                     for (let i = headerRowIndex + 1; i < data.length; i++) {
-                        const row = data[i]; if (!row || !row[partNoCol]) continue;
-                        const pNo = String(row[partNoCol]).trim(); const qpu = parseFloat(row[qtyCol]) || 0; const pName = partNameCol !== -1 ? row[partNameCol] : ""; const lvl = levelCol !== -1 ? parseLvl(row[levelCol]) : "-"; const reuseVal = reuseCol !== -1 ? String(row[reuseCol]).trim() : "-";
+                        const row = data[i]; if (!row || !row[pCol]) continue;
+                        const pNo = String(row[pCol]).trim(); const qpu = parseFloat(row[qCol]) || 0; const pName = nCol !== -1 ? row[nCol] : ""; const lvl = lCol !== -1 ? parseLvl(row[lCol]) : "-"; const reuseVal = rCol !== -1 ? String(row[rCol]).trim() : "-";
                         if (qpu > 0) { if (!summaryMap[pNo]) { summaryMap[pNo] = { partNo: pNo, partName: pName, level: lvl, reqQty: 0, reuse: new Set(), breakdown: [] }; }
                             const totalForThisOrder = qpu * cand.qty; summaryMap[pNo].reqQty += totalForThisOrder; if (reuseVal !== "-") summaryMap[pNo].reuse.add(reuseVal);
                             summaryMap[pNo].breakdown.push({ model: cand.input, sheetMatched: sheetName, orderQty: cand.qty, perUnit: qpu, total: totalForThisOrder });
