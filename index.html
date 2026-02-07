@@ -67,6 +67,7 @@
         const { useState, useEffect, useMemo, useRef } = React;
 
         // --- Configuration ---
+        const ADMIN_PASS = "1111"; 
         const STORAGE_KEY_INV = "nlc_erp_inventory";
         const STORAGE_KEY_TRANS = "nlc_erp_transactions";
         const STORAGE_KEY_API_URL = "nlc_erp_api_url";
@@ -248,8 +249,18 @@
                     const resBOM = await fetch(apiUrl + "?action=getBOM");
                     const dataBOM = await resBOM.json();
                     
-                    if (Object.keys(dataBOM).length > 0) {
-                        setBomData(dataBOM);
+                    // Filter out 'data' sheet from auto-load as well
+                    const filteredBOM = {};
+                    let hasValidBOM = false;
+                    Object.keys(dataBOM).forEach(key => {
+                        if (key.toLowerCase() !== 'data') {
+                            filteredBOM[key] = dataBOM[key];
+                            hasValidBOM = true;
+                        }
+                    });
+
+                    if (hasValidBOM) {
+                        setBomData(filteredBOM);
                     }
                     
                 } catch (error) {
@@ -290,7 +301,7 @@
                 
                 if (existingIndex >= 0) {
                     let newQty = updatedInv[existingIndex].qty;
-                    if (type === 'IN' || type === 'INIT') newQty += parseFloat(qty);
+                    if (type === 'IN') newQty += parseFloat(qty);
                     else if (type === 'OUT') newQty -= parseFloat(qty);
                     else if (type === 'ADJUST') newQty = parseFloat(qty);
                     updatedInv[existingIndex] = { ...updatedInv[existingIndex], qty: newQty };
@@ -614,12 +625,35 @@
             const calculateFuzzyScore = (inputTokens, targetTokens) => { if (inputTokens.length === 0 || targetTokens.length === 0) return 0; let totalMaxSim = 0; const matches = []; inputTokens.forEach(inToken => { let maxSim = 0; let bestMatchToken = null; targetTokens.forEach(targetToken => { const sim = getSimilarity(inToken, targetToken); if (sim > maxSim) { maxSim = sim; bestMatchToken = targetToken; } }); if(bestMatchToken) { const inIsNum = !isNaN(inToken); const tarIsNum = !isNaN(bestMatchToken); if(inIsNum !== tarIsNum) maxSim *= 0.5; } totalMaxSim += maxSim; matches.push({ token: inToken, match: bestMatchToken, similarity: maxSim }); }); const score = totalMaxSim / inputTokens.length; const lengthRatio = Math.min(inputTokens.length, targetTokens.length) / Math.max(inputTokens.length, targetTokens.length); return { score: score * 0.9 + lengthRatio * 0.1, matches }; };
             const findSmartMatch = (inputModel, sheets) => { const input = inputModel.trim().toUpperCase(); const inputTokens = tokenize(input); const candidates = sheets.map(name => { const targetTokens = tokenize(name); const { score, matches } = calculateFuzzyScore(inputTokens, targetTokens); return { name, score, targetTokens, matches }; }); const goodCandidates = candidates.filter(c => c.score > 0.4).sort((a, b) => b.score - a.score); const best = goodCandidates.length > 0 ? goodCandidates[0] : null; return { name: best ? best.name : null, score: best ? best.score : 0, tokens: inputTokens, matches: best ? best.matches : [], candidates: goodCandidates.slice(0, 5) }; };
 
-            const handleFileUpload = (e) => { const file = e.target.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = (evt) => { const workbook = XLSX.read(new Uint8Array(evt.target.result), { type: 'array' }); const sheetsData = {}; workbook.SheetNames.forEach(name => { sheetsData[name] = XLSX.utils.sheet_to_json(workbook.Sheets[name], { header: 1 }); }); setAllSheets(sheetsData); setSheetNames(workbook.SheetNames); setCurrentPreviewSheet(workbook.SheetNames[0]); detectColumns(sheetsData, workbook.SheetNames[0]); }; reader.readAsArrayBuffer(file); };
+            const handleFileUpload = (e) => { const file = e.target.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = (evt) => { const workbook = XLSX.read(new Uint8Array(evt.target.result), { type: 'array' }); const sheetsData = {}; workbook.SheetNames.forEach(name => { if (name.toLowerCase() !== 'data') { sheetsData[name] = XLSX.utils.sheet_to_json(workbook.Sheets[name], { header: 1 }); } }); if(Object.keys(sheetsData).length === 0) { alert("No valid BOM sheets found (excluding 'data')."); return; } setAllSheets(sheetsData); setSheetNames(Object.keys(sheetsData)); setCurrentPreviewSheet(Object.keys(sheetsData)[0]); detectColumns(sheetsData, Object.keys(sheetsData)[0]); }; reader.readAsArrayBuffer(file); };
             
             const handleCloudLoad = async (isAuto = false) => {
-                if (!apiUrl) { if (!isAuto) alert("Please connect to Google Sheet first."); return; }
+                // FORCE: Always use DEFAULT_API_URL if local is missing/empty, even if user didn't set it in UI yet.
+                const targetUrl = apiUrl && apiUrl.trim().length > 0 ? apiUrl : DEFAULT_API_URL;
+
+                if (!targetUrl || targetUrl.trim() === "") { 
+                    if (!isAuto) alert("Please connect to Google Sheet first."); 
+                    return; 
+                }
+                
                 setIsLoading(true); if (isAuto) setIsBomLoading(true);
-                try { const res = await fetch(apiUrl + "?action=getBOM"); const data = await res.json(); if (Object.keys(data).length === 0) { return; } setAllSheets(data); const names = Object.keys(data); setSheetNames(names); setCurrentPreviewSheet(names[0]); detectColumns(data, names[0]); } catch(e) { if (!isAuto) alert("Error loading BOM from Cloud: " + e.message); console.error(e); } finally { setIsLoading(false); if (isAuto) setIsBomLoading(false); }
+                try { 
+                    const res = await fetch(targetUrl + "?action=getBOM"); 
+                    const data = await res.json(); 
+                    
+                    const filteredData = {};
+                    const names = Object.keys(data).filter(name => name.toLowerCase() !== 'data');
+                    names.forEach(name => filteredData[name] = data[name]);
+
+                    if (names.length === 0) { 
+                        return; 
+                    } 
+
+                    setAllSheets(filteredData); 
+                    setSheetNames(names); 
+                    setCurrentPreviewSheet(names[0]); 
+                    detectColumns(filteredData, names[0]); 
+                } catch(e) { if (!isAuto) alert("Error loading BOM from Cloud: " + e.message); console.error(e); } finally { setIsLoading(false); if (isAuto) setIsBomLoading(false); }
             }
 
             const getSheetBOM = (sheetName) => {
