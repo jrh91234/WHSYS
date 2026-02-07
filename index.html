@@ -190,7 +190,7 @@
             const [users, setUsers] = useState(() => getStorage(STORAGE_KEY_USERS, INITIAL_USERS));
             const [bomData, setBomData] = useState(() => getStorage(STORAGE_KEY_BOM_DATA, {}));
             
-            // Fixed: Logic to prefer DEFAULT_API_URL if local storage is empty/invalid
+            // Initialize API URL with priority to local storage, fallback to DEFAULT
             const [apiUrl, setApiUrl] = useState(() => {
                 const local = localStorage.getItem(STORAGE_KEY_API_URL);
                 if (local && local.trim().length > 0) return local; // If user manually set one, keep it
@@ -261,6 +261,7 @@
             };
 
             const handleLogin = () => {
+                // FIXED: Convert both passwords to String and Trim whitespace to prevent type mismatch (Number vs String)
                 const user = users.find(u => 
                     String(u.username).trim() === inputUser.trim() && 
                     String(u.password).trim() === inputPass.trim()
@@ -381,7 +382,7 @@
                     <main className="flex-1 overflow-y-auto p-4 md:p-8 pt-20 md:pt-8 pb-20 md:pb-8 relative">
                         {currentView === 'dashboard' && <DashboardView inventory={inventory} transactions={transactions} toInventory={()=>setCurrentView('inventory')} />}
                         {currentView === 'inventory' && <InventoryView inventory={inventory} setInventory={setInventory} addTransaction={addTransaction} deleteItem={deleteItem} />}
-                        {currentView === 'mrp' && <AdvancedMRPView inventory={inventory} addTransaction={addTransaction} bomData={bomData} setBomData={setBomData} isCloud={isCloud} apiUrl={apiUrl} />}
+                        {currentView === 'mrp' && <AdvancedMRPView inventory={inventory} addTransaction={addTransaction} bomData={bomData} setBomData={setBomData} isCloud={isCloud} apiUrl={apiUrl} setIsLoading={setIsLoading} />}
                         {currentView === 'history' && <HistoryView transactions={transactions} />}
                         {currentView === 'settings' && <SettingsView apiUrl={apiUrl} setApiUrl={setApiUrl} setIsCloud={setIsCloud} setIsLoading={setIsLoading} users={users} onSaveUser={saveUser} onDeleteUser={deleteUser} currentUser={currentUser} />}
                     </main>
