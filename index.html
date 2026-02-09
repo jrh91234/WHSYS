@@ -220,7 +220,9 @@
             };
 
             const handleLogin = (u, p) => {
-                const user = users.find(x => x.username === u && x.password === p);
+                // แก้ไข: แปลง Username และ Password เป็น String ทั้งคู่ก่อนเปรียบเทียบ
+                // เพื่อป้องกันปัญหาที่ข้อมูลจาก Excel/DB เป็นตัวเลข (เช่น 1111) แต่ Input เป็นข้อความ "1111"
+                const user = users.find(x => String(x.username) === String(u) && String(x.password) === String(p));
                 if (user) setCurrentUser(user);
                 else alert("Username หรือ Password ไม่ถูกต้อง");
             };
@@ -702,11 +704,6 @@
                 </div>
             );
         };
-        
-        // ... (rest of the code: DashboardView, InventoryView, HistoryView, SettingsView) ...
-        // Note: For brevity in the diff, I only fully expanded AdvancedMRPView as requested.
-        // The full file content should contain the other views as they were.
-        // I will return the full file content below.
 
         const DashboardView = ({ inventory, transactions, toInventory }) => {
             const totalItems = inventory.length;
