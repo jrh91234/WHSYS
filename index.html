@@ -169,14 +169,14 @@
                 
                 const checkAndSync = async () => {
                     try {
-                        const res = await fetch(apiUrl + "?action=checkVersion");
+                        const res = await fetch(apiUrl + "?action=checkVersion&t=" + Date.now()); // Add timestamp
                         const data = await res.json();
                         if (data.lastUpdated && data.lastUpdated > bomVersion) {
                             console.log("Found new version, auto-syncing...");
                             fetchAllData(true);
                         }
                     } catch (e) {
-                        console.log("Auto sync check failed (Offline?)");
+                        console.log("Auto sync check failed (Offline or CORS?)");
                     }
                 };
 
@@ -190,13 +190,13 @@
                 else setIsSyncing(true);
 
                 try {
-                    const res = await fetch(apiUrl + "?action=getData");
+                    const res = await fetch(apiUrl + "?action=getData&t=" + Date.now()); // Add timestamp
                     const data = await res.json();
                     if (data.inventory) setInventory(data.inventory);
                     if (data.transactions) setTransactions(data.transactions);
                     if (data.users) setUsers(data.users);
 
-                    const resBOM = await fetch(apiUrl + "?action=getBOM");
+                    const resBOM = await fetch(apiUrl + "?action=getBOM&t=" + Date.now()); // Add timestamp
                     const jsonBOM = await resBOM.json();
                     const sheetData = jsonBOM.data || jsonBOM;
                     const version = jsonBOM.version || Date.now();
@@ -213,6 +213,10 @@
 
                 } catch (e) { 
                     console.error("Sync Error", e); 
+                    // แจ้งเตือนเฉพาะตอนโหลดครั้งแรกและข้อมูลยังเป็นค่าเริ่มต้น
+                    if (!isBackground && inventory.length === 1 && inventory[0].partNo === 'DEMO-001') {
+                        alert("⚠️ ไม่สามารถเชื่อมต่อกับ Google Sheets ได้\n\nสาเหตุที่เป็นไปได้:\n1. ยังไม่ได้ตั้งค่า Deploy เป็น 'Anyone' (ทุกคน)\n2. ยังไม่ได้กด Allow Permission ใน Script Editor\n3. URL ผิดพลาด\n\nกรุณาตรวจสอบการตั้งค่าใน Google Apps Script");
+                    }
                 } finally { 
                     setIsLoading(false); 
                     setIsSyncing(false);
@@ -368,7 +372,7 @@
                 if (!apiUrl) return alert("กรุณาตั้งค่า URL ก่อน");
                 setIsLoading(true);
                 try {
-                    const res = await fetch(apiUrl + "?action=getBOM");
+                    const res = await fetch(apiUrl + "?action=getBOM&t=" + Date.now()); // Add timestamp
                     const json = await res.json();
                     const data = json.data || json;
                     const names = Object.keys(data).filter(k => k !== 'version');
@@ -376,7 +380,7 @@
                     setSheetNames(names);
                     setCurrentPreviewSheet(names[0]);
                     alert("ดึงข้อมูล BOM สำเร็จ");
-                } catch(e) { alert("โหลดข้อมูลไม่สำเร็จ: " + e.message); }
+                } catch(e) { alert("โหลดข้อมูลไม่สำเร็จ (CORS/Deploy Error): " + e.message); }
                 finally { setIsLoading(false); }
             };
 
@@ -704,6 +708,11 @@
                 </div>
             );
         };
+
+        // ... (rest of the code: DashboardView, InventoryView, HistoryView, SettingsView) ...
+        // Note: For brevity in the diff, I only fully expanded AdvancedMRPView as requested.
+        // The full file content should contain the other views as they were.
+        // I will return the full file content below.
 
         const DashboardView = ({ inventory, transactions, toInventory }) => {
             const totalItems = inventory.length;
