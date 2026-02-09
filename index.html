@@ -49,10 +49,11 @@
         const STORAGE_KEY_BOM_DATA = "nlc_erp_bom_data";
         const STORAGE_KEY_BOM_VERSION = "nlc_erp_bom_version";
 
+        // URL ใหม่ของคุณที่ Update แล้ว
         const DEFAULT_API_URL = "https://script.google.com/macros/s/AKfycby923XbLtP0TxMmKNG1JyhmtZeMNNALNCCJLXWr1GI70NYH0h7AI27c7yP2-L3h9Ne_zQ/exec"; 
         
         const INITIAL_INVENTORY = [
-            { partNo: "DEMO-001", name: "สินค้าตัวอย่าง (ระบุ URL ใน Settings เพื่อดึงข้อมูลจริง)", qty: 100, location: "A1", unit: "PCS", minStock: 20 }
+            { partNo: "DEMO-001", name: "สินค้าตัวอย่าง (กำลังเชื่อมต่อ Cloud...)", qty: 0, location: "-", unit: "PCS", minStock: 0 }
         ];
 
         const INITIAL_USERS = [
@@ -159,13 +160,15 @@
             }, [inventory, transactions, users, bomData, bomVersion]);
 
             useEffect(() => {
-                if (currentUser) { setStorage(STORAGE_KEY_SESSION, currentUser); fetchAllData(); }
-                else { localStorage.removeItem(STORAGE_KEY_SESSION); }
+                if (currentUser) { setStorage(STORAGE_KEY_SESSION, currentUser); }
+                // Fetch data immediately when app loads, even if not logged in (to get latest users)
+                fetchAllData(true); 
+                if(!currentUser) { localStorage.removeItem(STORAGE_KEY_SESSION); }
             }, [currentUser]);
 
             // --- AUTO SYNC LOGIC ---
             useEffect(() => {
-                if (!apiUrl || !currentUser) return;
+                if (!apiUrl) return;
                 
                 const checkAndSync = async () => {
                     try {
@@ -182,19 +185,21 @@
 
                 const interval = setInterval(checkAndSync, 10000);
                 return () => clearInterval(interval);
-            }, [apiUrl, currentUser, bomVersion]);
+            }, [apiUrl, bomVersion]);
 
             const fetchAllData = async (isBackground = false) => {
-                if (!apiUrl || !currentUser) return;
+                if (!apiUrl) return;
                 if (!isBackground) setIsLoading(true);
                 else setIsSyncing(true);
 
                 try {
                     const res = await fetch(apiUrl + "?action=getData&t=" + Date.now()); // Add timestamp
                     const data = await res.json();
+                    
+                    // Update only if data is valid
                     if (data.inventory) setInventory(data.inventory);
                     if (data.transactions) setTransactions(data.transactions);
-                    if (data.users) setUsers(data.users);
+                    if (data.users) setUsers(data.users); // Critical: Update users for login
 
                     const resBOM = await fetch(apiUrl + "?action=getBOM&t=" + Date.now()); // Add timestamp
                     const jsonBOM = await resBOM.json();
@@ -213,10 +218,6 @@
 
                 } catch (e) { 
                     console.error("Sync Error", e); 
-                    // แจ้งเตือนเฉพาะตอนโหลดครั้งแรกและข้อมูลยังเป็นค่าเริ่มต้น
-                    if (!isBackground && inventory.length === 1 && inventory[0].partNo === 'DEMO-001') {
-                        alert("⚠️ ไม่สามารถเชื่อมต่อกับ Google Sheets ได้\n\nสาเหตุที่เป็นไปได้:\n1. ยังไม่ได้ตั้งค่า Deploy เป็น 'Anyone' (ทุกคน)\n2. ยังไม่ได้กด Allow Permission ใน Script Editor\n3. URL ผิดพลาด\n\nกรุณาตรวจสอบการตั้งค่าใน Google Apps Script");
-                    }
                 } finally { 
                     setIsLoading(false); 
                     setIsSyncing(false);
@@ -225,10 +226,14 @@
 
             const handleLogin = (u, p) => {
                 // แก้ไข: แปลง Username และ Password เป็น String ทั้งคู่ก่อนเปรียบเทียบ
-                // เพื่อป้องกันปัญหาที่ข้อมูลจาก Excel/DB เป็นตัวเลข (เช่น 1111) แต่ Input เป็นข้อความ "1111"
-                const user = users.find(x => String(x.username) === String(u) && String(x.password) === String(p));
-                if (user) setCurrentUser(user);
-                else alert("Username หรือ Password ไม่ถูกต้อง");
+                const user = users.find(x => String(x.username).trim() === String(u).trim() && String(x.password).trim() === String(p).trim());
+                if (user) {
+                    setCurrentUser(user);
+                    // Force refresh data after login
+                    fetchAllData(); 
+                } else {
+                    alert("Username หรือ Password ไม่ถูกต้อง\n(ลองตรวจสอบว่า Sheet 'Users' มีข้อมูลที่ถูกต้องหรือไม่)");
+                }
             };
 
             const addTransaction = async (type, partNo, qty, refDoc, note, newItemData = null) => {
@@ -274,7 +279,7 @@
                 if (apiUrl) fetch(apiUrl, { method: "POST", mode: "no-cors", body: JSON.stringify({ action: "delete_user", id }) });
             };
 
-            if (!currentUser) return <LoginView onLogin={handleLogin} isLoading={isLoading} />;
+            if (!currentUser) return <LoginView onLogin={handleLogin} isLoading={isLoading} apiUrl={apiUrl} setApiUrl={setApiUrl} />;
 
             return (
                 <div className="flex h-screen bg-slate-100 relative">
@@ -316,18 +321,40 @@
             return <button onClick={onClick} className={`w-full text-left px-4 py-3 rounded-xl flex items-center gap-3 text-sm font-medium sidebar-link ${active ? 'active text-blue-400 bg-slate-800' : 'hover:text-white hover:bg-slate-800'}`}><Icon/> {label}</button>;
         };
 
-        const LoginView = ({ onLogin, isLoading }) => {
-            const [u, setU] = useState(""); const [p, setP] = useState("");
+        const LoginView = ({ onLogin, isLoading, apiUrl, setApiUrl }) => {
+            const [u, setU] = useState(""); 
+            const [p, setP] = useState("");
+            const [showConfig, setShowConfig] = useState(false);
+            const [tempUrl, setTempUrl] = useState(apiUrl);
+
             return (
                 <div className="min-h-screen flex items-center justify-center bg-slate-800 p-4">
-                    <div className="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-sm text-center">
+                    <div className="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-sm text-center relative">
+                        {/* ปุ่มตั้งค่า URL กรณี Login ไม่ได้ */}
+                        <button onClick={()=>setShowConfig(!showConfig)} className="absolute top-4 right-4 text-slate-300 hover:text-slate-500" title="Connection Settings"><Icons.Settings/></button>
+                        
                         <div className="w-16 h-16 bg-blue-600 rounded-full flex items-center justify-center mx-auto mb-4 text-white text-2xl"><Icons.Warehouse/></div>
                         <h1 className="text-xl font-bold mb-6 text-slate-800">NLC Factory ERP</h1>
-                        <input type="text" value={u} onChange={e=>setU(e.target.value)} className="w-full p-3 border rounded-xl mb-3 outline-none focus:ring-2 focus:ring-blue-100" placeholder="Username"/>
-                        <input type="password" value={p} onChange={e=>setP(e.target.value)} onKeyDown={e=>e.key==='Enter'&&onLogin(u,p)} className="w-full p-3 border rounded-xl mb-6 outline-none focus:ring-2 focus:ring-blue-100" placeholder="Password"/>
-                        <button onClick={()=>onLogin(u,p)} className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 transition">
-                            {isLoading ? "Loading..." : "Login"}
-                        </button>
+                        
+                        {showConfig ? (
+                            <div className="mb-6 animate-fade-in text-left bg-slate-50 p-4 rounded-xl border">
+                                <label className="text-xs font-bold text-slate-500 mb-1 block">API URL (Google Apps Script)</label>
+                                <textarea value={tempUrl} onChange={e=>setTempUrl(e.target.value)} className="w-full p-2 border rounded text-xs mb-2 h-20 break-all" />
+                                <div className="flex gap-2">
+                                    <button onClick={()=>setShowConfig(false)} className="flex-1 py-2 bg-slate-200 rounded text-xs font-bold text-slate-600">Cancel</button>
+                                    <button onClick={()=>{ setApiUrl(tempUrl); localStorage.setItem(STORAGE_KEY_API_URL, tempUrl); setShowConfig(false); alert("บันทึก URL แล้ว กรุณารอสักครู่ระบบจะรีโหลดข้อมูล..."); window.location.reload(); }} className="flex-1 bg-blue-600 text-white py-2 rounded text-xs font-bold">Save & Reload</button>
+                                </div>
+                            </div>
+                        ) : (
+                            <>
+                                <input type="text" value={u} onChange={e=>setU(e.target.value)} className="w-full p-3 border rounded-xl mb-3 outline-none focus:ring-2 focus:ring-blue-100" placeholder="Username"/>
+                                <input type="password" value={p} onChange={e=>setP(e.target.value)} onKeyDown={e=>e.key==='Enter'&&onLogin(u,p)} className="w-full p-3 border rounded-xl mb-6 outline-none focus:ring-2 focus:ring-blue-100" placeholder="Password"/>
+                                <button onClick={()=>onLogin(u,p)} disabled={isLoading} className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 transition disabled:opacity-50">
+                                    {isLoading ? "Connecting..." : "Login"}
+                                </button>
+                                <div className="mt-4 text-[10px] text-slate-400">Cloud Status: {isLoading ? 'Syncing...' : 'Ready'}</div>
+                            </>
+                        )}
                     </div>
                 </div>
             );
@@ -708,11 +735,6 @@
                 </div>
             );
         };
-
-        // ... (rest of the code: DashboardView, InventoryView, HistoryView, SettingsView) ...
-        // Note: For brevity in the diff, I only fully expanded AdvancedMRPView as requested.
-        // The full file content should contain the other views as they were.
-        // I will return the full file content below.
 
         const DashboardView = ({ inventory, transactions, toInventory }) => {
             const totalItems = inventory.length;
