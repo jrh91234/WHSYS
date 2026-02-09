@@ -163,7 +163,7 @@
                 else { localStorage.removeItem(STORAGE_KEY_SESSION); }
             }, [currentUser]);
 
-            // --- AUTO SYNC LOGIC (เพิ่มใหม่ตามคำขอข้อ 1) ---
+            // --- AUTO SYNC LOGIC ---
             useEffect(() => {
                 if (!apiUrl || !currentUser) return;
                 
@@ -171,7 +171,6 @@
                     try {
                         const res = await fetch(apiUrl + "?action=checkVersion");
                         const data = await res.json();
-                        // ถ้าเวอร์ชันบน Cloud ใหม่กว่า Local ให้ดึงข้อมูลใหม่ทันที
                         if (data.lastUpdated && data.lastUpdated > bomVersion) {
                             console.log("Found new version, auto-syncing...");
                             fetchAllData(true);
@@ -181,7 +180,6 @@
                     }
                 };
 
-                // ตรวจสอบทุก 10 วินาที
                 const interval = setInterval(checkAndSync, 10000);
                 return () => clearInterval(interval);
             }, [apiUrl, currentUser, bomVersion]);
@@ -192,20 +190,17 @@
                 else setIsSyncing(true);
 
                 try {
-                    // ดึงข้อมูลหลัก
                     const res = await fetch(apiUrl + "?action=getData");
                     const data = await res.json();
                     if (data.inventory) setInventory(data.inventory);
                     if (data.transactions) setTransactions(data.transactions);
                     if (data.users) setUsers(data.users);
 
-                    // ดึงข้อมูล BOM
                     const resBOM = await fetch(apiUrl + "?action=getBOM");
                     const jsonBOM = await resBOM.json();
                     const sheetData = jsonBOM.data || jsonBOM;
                     const version = jsonBOM.version || Date.now();
                     
-                    // Filter BOM data (เอาเฉพาะ Sheet ที่ไม่ใช่ system sheets)
                     const filteredBOM = {};
                     Object.keys(sheetData).forEach(key => {
                         if (key.toLowerCase() !== 'data' && key !== 'version') {
@@ -298,7 +293,6 @@
                     <div className="md:hidden fixed top-0 left-0 right-0 bg-slate-900 text-white p-4 z-30 flex justify-between items-center shadow-lg"><div className="font-bold flex items-center gap-2"><Icons.Warehouse/> NLC ERP</div><button onClick={()=>setCurrentUser(null)} className="text-xs bg-slate-800 px-3 py-1 rounded">Logout</button></div>
                     
                     <main className="flex-1 overflow-y-auto p-4 md:p-8 pt-20 md:pt-8">
-                        {/* Auto Sync Indicator for Mobile/Top */}
                         {isSyncing && <div className="absolute top-4 right-4 bg-white px-3 py-1 rounded-full shadow text-xs text-blue-600 flex items-center gap-2 z-50"><Icons.Refresh className="animate-spin"/> Syncing...</div>}
                         
                         {currentView === 'dashboard' && <DashboardView inventory={inventory} transactions={transactions} toInventory={()=>setCurrentView('inventory')} />}
@@ -333,10 +327,10 @@
             );
         };
 
-        // --- MRP View (Restore Compare & Fix) ---
+        // --- MRP View (Header Selection Restored) ---
         const AdvancedMRPView = ({ inventory, addTransaction, bomData, setBomData, apiUrl }) => {
             const [step, setStep] = useState(1);
-            const [mode, setMode] = useState('plan'); // 'plan' or 'compare' (Restored)
+            const [mode, setMode] = useState('plan');
             const [sheetNames, setSheetNames] = useState(Object.keys(bomData) || []);
             const [currentPreviewSheet, setCurrentPreviewSheet] = useState(sheetNames[0] || "");
             
@@ -346,6 +340,8 @@
             const [lvlCol, setLvlCol] = useState(0);
             const [typeCol, setTypeCol] = useState(5);
             const [nameCol, setNameCol] = useState(2);
+            
+            const [bomColWidths, setBomColWidths] = useState({}); // Restore Col Widths
 
             const [orderText, setOrderText] = useState("");
             const [matchCandidates, setMatchCandidates] = useState([]);
@@ -353,7 +349,6 @@
             const [finalSummary, setFinalSummary] = useState(null);
             const [isLoading, setIsLoading] = useState(false);
 
-            // Compare Mode State (Restored)
             const [compareList, setCompareList] = useState(["", ""]);
             const [compResult, setCompResult] = useState(null);
 
@@ -491,24 +486,51 @@
                                     <div className="flex gap-2 overflow-x-auto pb-4 mb-4">
                                         {sheetNames.map(n => <button key={n} onClick={()=>setCurrentPreviewSheet(n)} className={`px-3 py-1 rounded-full text-xs whitespace-nowrap border ${currentPreviewSheet===n?'bg-slate-800 text-white':'bg-white'}`}>{n}</button>)}
                                     </div>
-                                    <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6 bg-slate-50 p-4 rounded-xl">
-                                        <div><label className="text-[10px] font-bold text-slate-500">Part# Col</label><input type="number" value={pNoCol} onChange={e=>setPNoCol(parseInt(e.target.value))} className="w-full p-2 border rounded"/></div>
-                                        <div><label className="text-[10px] font-bold text-slate-500">Qty Col</label><input type="number" value={qtyCol} onChange={e=>setQtyCol(parseInt(e.target.value))} className="w-full p-2 border rounded"/></div>
-                                        <div><label className="text-[10px] font-bold text-slate-500">Name Col</label><input type="number" value={nameCol} onChange={e=>setNameCol(parseInt(e.target.value))} className="w-full p-2 border rounded"/></div>
-                                        <div><label className="text-[10px] font-bold text-slate-500">Level Col</label><input type="number" value={lvlCol} onChange={e=>setLvlCol(parseInt(e.target.value))} className="w-full p-2 border rounded"/></div>
-                                        <div><label className="text-[10px] font-bold text-slate-500">Type Col</label><input type="number" value={typeCol} onChange={e=>setTypeCol(parseInt(e.target.value))} className="w-full p-2 border rounded"/></div>
-                                    </div>
-                                    <div className="overflow-x-auto border rounded-xl h-60 text-[10px]">
-                                        <table className="w-full border-collapse">
-                                            <thead className="bg-slate-100 sticky top-0">
-                                                <tr>{bomData[currentPreviewSheet]?.[0]?.map((h, i) => <th key={i} className="p-2 border text-left">{h || `Col ${i}`}</th>)}</tr>
+                                    
+                                    {/* --- Table Header Selection (Restored) --- */}
+                                    <div className="overflow-x-auto border rounded-xl h-96 text-xs">
+                                        <table className="w-max border-collapse">
+                                            <thead className="bg-white sticky top-0 z-10 shadow-sm">
+                                                <tr>
+                                                    <th className="p-2 border-b border-r bg-slate-50 text-center w-10">#</th>
+                                                    {bomData[currentPreviewSheet]?.[0]?.map((h, i) => (
+                                                        <ResizableTh key={i} width={bomColWidths[i] || 150} onResize={w => setBomColWidths(prev => ({...prev, [i]: w}))} className="p-2 border-b border-r bg-white align-top">
+                                                            <div className="flex flex-col gap-2">
+                                                                <div className="grid grid-cols-3 gap-1">
+                                                                    <button onClick={()=>setPNoCol(i)} className={`px-1 py-0.5 border rounded text-[9px] font-bold ${i===pNoCol?'bg-blue-600 text-white':'bg-slate-50 text-slate-400 hover:bg-slate-100'}`}>P#</button>
+                                                                    <button onClick={()=>setNameCol(i)} className={`px-1 py-0.5 border rounded text-[9px] font-bold ${i===nameCol?'bg-emerald-500 text-white':'bg-slate-50 text-slate-400 hover:bg-slate-100'}`}>Name</button>
+                                                                    <button onClick={()=>setQtyCol(i)} className={`px-1 py-0.5 border rounded text-[9px] font-bold ${i===qtyCol?'bg-sky-500 text-white':'bg-slate-50 text-slate-400 hover:bg-slate-100'}`}>Qty</button>
+                                                                    <button onClick={()=>setLvlCol(i)} className={`px-1 py-0.5 border rounded text-[9px] font-bold ${i===lvlCol?'bg-purple-500 text-white':'bg-slate-50 text-slate-400 hover:bg-slate-100'}`}>Lvl</button>
+                                                                    <button onClick={()=>setTypeCol(i)} className={`px-1 py-0.5 border rounded text-[9px] font-bold ${i===typeCol?'bg-orange-500 text-white':'bg-slate-50 text-slate-400 hover:bg-slate-100'}`}>Type</button>
+                                                                </div>
+                                                                <div className="font-bold text-slate-700 truncate" title={h}>{h || `Col ${i}`}</div>
+                                                            </div>
+                                                        </ResizableTh>
+                                                    ))}
+                                                </tr>
                                             </thead>
                                             <tbody>
-                                                {bomData[currentPreviewSheet]?.slice(1, 10).map((row, ri) => (
-                                                    <tr key={ri}>{row.map((c, ci) => <td key={ci} className={`p-2 border ${ci===pNoCol?'bg-blue-50 font-bold':''}`}>{c}</td>)}</tr>
+                                                {bomData[currentPreviewSheet]?.slice(1, 15).map((row, ri) => (
+                                                    <tr key={ri} className="border-b hover:bg-slate-50">
+                                                        <td className="p-2 border-r text-center text-slate-300">{ri+1}</td>
+                                                        {row.map((c, ci) => (
+                                                            <td key={ci} className={`p-2 border-r truncate max-w-[150px] 
+                                                                ${ci===pNoCol?'bg-blue-50 text-blue-700 font-bold':''}
+                                                                ${ci===qtyCol?'bg-sky-50 text-sky-700 font-bold':''}
+                                                                ${ci===nameCol?'bg-emerald-50 text-emerald-700':''}
+                                                            `}>{c}</td>
+                                                        ))}
+                                                    </tr>
                                                 ))}
                                             </tbody>
                                         </table>
+                                    </div>
+                                    <div className="mt-4 text-xs text-slate-500 flex gap-4">
+                                        <span>Part No: <b className="text-blue-600">{pNoCol}</b></span>
+                                        <span>Name: <b className="text-emerald-600">{nameCol}</b></span>
+                                        <span>Qty: <b className="text-sky-600">{qtyCol}</b></span>
+                                        <span>Level: <b className="text-purple-600">{lvlCol}</b></span>
+                                        <span>Type: <b className="text-orange-600">{typeCol}</b></span>
                                     </div>
                                     <button onClick={()=>setStep(2)} className="w-full mt-6 bg-blue-600 text-white py-3 rounded-xl font-bold">Next: Input Plan</button>
                                 </>
@@ -637,7 +659,6 @@
             );
         };
 
-        // --- Dashboard View (Restored Widgets) ---
         const DashboardView = ({ inventory, transactions, toInventory }) => {
             const totalItems = inventory.length;
             const lowStockItems = inventory.filter(i => i.qty <= (i.minStock || 0));
@@ -688,16 +709,13 @@
             );
         };
 
-        // --- Inventory View (Restored Full Modal) ---
         const InventoryView = ({ inventory, addTransaction, deleteItem }) => {
             const [search, setSearch] = useState("");
-            const [modal, setModal] = useState(null); // 'ADD', 'IN', 'OUT'
+            const [modal, setModal] = useState(null); 
             const [selected, setSelected] = useState(null);
-            
-            // Form State
             const [form, setForm] = useState({ partNo: "", name: "", qty: 0, location: "", minStock: 0, refDoc: "" });
 
-            const filtered = inventory.filter(i => i.partNo.toLowerCase().includes(search.toLowerCase()) || i.name.toLowerCase().includes(search.toLowerCase()));
+            const filtered = inventory.filter(i => String(i.partNo || "").toLowerCase().includes(search.toLowerCase()) || String(i.name || "").toLowerCase().includes(search.toLowerCase()));
 
             const openModal = (type, item = null) => {
                 setModal(type);
@@ -817,7 +835,6 @@
             </div>
         );
 
-        // --- Settings View (Restored User Management) ---
         const SettingsView = ({ apiUrl, setApiUrl, users, currentUser, onSaveUser, onDeleteUser }) => {
             const [url, setUrl] = useState(apiUrl);
             const [userModal, setUserModal] = useState(false);
