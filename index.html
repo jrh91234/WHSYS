@@ -599,6 +599,7 @@
                                         <tr>
                                             <th className="p-3 border">Part No</th>
                                             <th className="p-3 border">Description</th>
+                                            <th className="p-3 border">Type</th>
                                             <th className="p-3 border text-right">Required</th>
                                             <th className="p-3 border text-right">Stock</th>
                                             <th className="p-3 border text-right">Balance</th>
@@ -610,6 +611,7 @@
                                             <tr key={i} className={item.diff < 0 ? 'bg-red-50' : ''}>
                                                 <td className="p-3 border font-mono font-bold">{item.partNo}</td>
                                                 <td className="p-3 border text-slate-500">{item.name}</td>
+                                                <td className="p-3 border text-slate-500">{item.type}</td>
                                                 <td className="p-3 border text-right font-bold">{formatNum(item.reqQty)}</td>
                                                 <td className="p-3 border text-right">{formatNum(item.onHand)}</td>
                                                 <td className={`p-3 border text-right font-bold ${item.diff < 0 ? 'text-red-600' : 'text-green-600'}`}>{formatNum(item.diff)}</td>
