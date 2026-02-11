@@ -388,7 +388,7 @@
             );
         };
 
-    // --- MRP View (Updated: Fixed ReferenceError + Search Part + Fuzzy Logic) ---
+   // --- MRP View (Updated: Breakdown shows Corrected Model Name) ---
         const AdvancedMRPView = ({ inventory, addTransaction, bomData, setBomData, apiUrl }) => {
             const [step, setStep] = useState(1);
             const [mode, setMode] = useState('plan'); // 'plan', 'compare', 'search'
@@ -508,7 +508,7 @@
 
                     treeResults.push({
                         type: 'JOB_HEADER',
-                        partNo: order.model,
+                        partNo: order.matchedSheet, // Use Corrected Model Name here
                         name: `Production Job: ${order.qty} Unit(s)`,
                         reqQty: order.qty,
                         level: 0,
@@ -540,7 +540,9 @@
                             };
                         }
                         summaryResults[pNo].reqQty += totalReq;
-                        summaryResults[pNo].breakdown.push({ model: order.model, qty: totalReq });
+                        
+                        // UPDATE: Use order.matchedSheet to show the Corrected/Selected Model
+                        summaryResults[pNo].breakdown.push({ model: order.matchedSheet, qty: totalReq });
 
                         const stock = inventory.find(i => i.partNo === pNo);
                         const onHand = stock ? stock.qty : 0;
@@ -554,7 +556,7 @@
                             qpu: qpu,
                             onHand: onHand,
                             diff: onHand - totalReq, 
-                            parentModel: order.model
+                            parentModel: order.matchedSheet // Use Corrected Model Name here too
                         });
                     });
                 });
@@ -1002,7 +1004,7 @@
                                         <tbody className="divide-y">
                                             {breakdownItem.breakdown.map((b, k) => (
                                                 <tr key={k} className="hover:bg-slate-50">
-                                                    <td className="py-2 px-4 text-slate-700">{b.model}</td>
+                                                    <td className="py-2 px-4 text-slate-700 font-bold">{b.model}</td>
                                                     <td className="py-2 px-4 text-right font-mono font-bold">{formatNum(b.qty)}</td>
                                                 </tr>
                                             ))}
@@ -1020,7 +1022,8 @@
                     )}
                 </div>
             );
-        };    
+        };
+        
         const DashboardView = ({ inventory, transactions, toInventory }) => {
             const totalItems = inventory.length;
             const lowStockItems = inventory.filter(i => i.qty <= (i.minStock || 0));
