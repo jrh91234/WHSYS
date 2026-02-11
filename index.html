@@ -32,6 +32,9 @@
 
         .sidebar-link { transition: all 0.2s; }
         .sidebar-link:hover, .sidebar-link.active { background-color: #1e293b; color: white; transform: translateX(5px); }
+        
+        /* Safe area for mobile bottom nav */
+        .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
     </style>
 </head>
 <body>
@@ -134,6 +137,16 @@
                     </div>
                     <div className={`resizer ${resizing ? 'resizing' : ''}`} onMouseDown={handleMouseDown} onClick={(e) => e.stopPropagation()} />
                 </th>
+            );
+        };
+
+        const MobileNavItem = ({ icon, label, active, onClick }) => {
+            const Icon = Icons[icon];
+            return (
+                <button onClick={onClick} className={`flex flex-col items-center justify-center w-full py-1 ${active ? 'text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}>
+                    <div className={`text-xl mb-0.5 ${active ? '-translate-y-0.5' : ''} transition-transform`}><Icon/></div>
+                    <span className="text-[10px] font-bold">{label}</span>
+                </button>
             );
         };
 
@@ -282,10 +295,10 @@
             if (!currentUser) return <LoginView onLogin={handleLogin} isLoading={isLoading} apiUrl={apiUrl} setApiUrl={setApiUrl} />;
 
             return (
-                <div className="flex h-screen bg-slate-100 relative">
-                    <aside className="w-64 bg-slate-900 text-slate-300 flex flex-col hidden md:flex">
+                <div className="flex h-screen bg-slate-100 relative overflow-hidden">
+                    <aside className="w-64 bg-slate-900 text-slate-300 flex flex-col hidden md:flex h-full">
                         <div className="p-6 border-b border-slate-800 font-bold text-white flex items-center gap-2"><Icons.Warehouse/> NLC ERP</div>
-                        <nav className="flex-1 p-4 space-y-1">
+                        <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
                             <SidebarItem icon="Dashboard" label="ภาพรวม" active={currentView==='dashboard'} onClick={()=>setCurrentView('dashboard')} />
                             <SidebarItem icon="Warehouse" label="คลังสินค้า" active={currentView==='inventory'} onClick={()=>setCurrentView('inventory')} />
                             <SidebarItem icon="Production" label="แผนผลิต (MRP)" active={currentView==='mrp'} onClick={()=>setCurrentView('mrp')} />
@@ -301,10 +314,16 @@
                         </div>
                     </aside>
 
-                    <div className="md:hidden fixed top-0 left-0 right-0 bg-slate-900 text-white p-4 z-30 flex justify-between items-center shadow-lg"><div className="font-bold flex items-center gap-2"><Icons.Warehouse/> NLC ERP</div><button onClick={()=>setCurrentUser(null)} className="text-xs bg-slate-800 px-3 py-1 rounded">Logout</button></div>
+                    <div className="md:hidden fixed top-0 left-0 right-0 bg-slate-900 text-white p-4 z-30 flex justify-between items-center shadow-lg">
+                        <div className="font-bold flex items-center gap-2"><Icons.Warehouse/> NLC ERP</div>
+                        <div className="flex items-center gap-3">
+                             {isSyncing && <div className="text-blue-400 flex items-center justify-center gap-1 text-xs"><div className="loader w-2 h-2 border-white border-t-transparent"></div></div>}
+                            <button onClick={()=>setCurrentUser(null)} className="text-xs bg-slate-800 px-3 py-1 rounded">Logout</button>
+                        </div>
+                    </div>
                     
-                    <main className="flex-1 overflow-y-auto p-4 md:p-8 pt-20 md:pt-8">
-                        {isSyncing && <div className="absolute top-4 right-4 bg-white px-3 py-1 rounded-full shadow text-xs text-blue-600 flex items-center gap-2 z-50"><Icons.Refresh className="animate-spin"/> Syncing...</div>}
+                    <main className="flex-1 overflow-y-auto p-4 md:p-8 pt-20 md:pt-8 pb-24 md:pb-8 h-full">
+                        {/* Auto Sync Indicator for Mobile/Top was moved to header */}
                         
                         {currentView === 'dashboard' && <DashboardView inventory={inventory} transactions={transactions} toInventory={()=>setCurrentView('inventory')} />}
                         {currentView === 'inventory' && <InventoryView inventory={inventory} addTransaction={addTransaction} deleteItem={handleDeleteItem} />}
@@ -312,6 +331,15 @@
                         {currentView === 'history' && <HistoryView transactions={transactions} />}
                         {currentView === 'settings' && <SettingsView apiUrl={apiUrl} setApiUrl={setApiUrl} users={users} currentUser={currentUser} onSaveUser={handleSaveUser} onDeleteUser={handleDeleteUser} />}
                     </main>
+
+                    {/* Mobile Bottom Navigation */}
+                    <div className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 px-4 py-2 z-30 flex justify-between items-center shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)] pb-safe">
+                        <MobileNavItem icon="Dashboard" label="ภาพรวม" active={currentView==='dashboard'} onClick={()=>setCurrentView('dashboard')} />
+                        <MobileNavItem icon="Warehouse" label="คลัง" active={currentView==='inventory'} onClick={()=>setCurrentView('inventory')} />
+                        <MobileNavItem icon="Production" label="ผลิต" active={currentView==='mrp'} onClick={()=>setCurrentView('mrp')} />
+                        <MobileNavItem icon="History" label="ประวัติ" active={currentView==='history'} onClick={()=>setCurrentView('history')} />
+                        <MobileNavItem icon="Settings" label="ตั้งค่า" active={currentView==='settings'} onClick={()=>setCurrentView('settings')} />
+                    </div>
                 </div>
             );
         };
