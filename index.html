@@ -388,7 +388,6 @@
             );
         };
 
-        // --- MRP View (Header Selection Restored) ---
         // --- MRP View (Updated with Parent-Child Tree) ---
         const AdvancedMRPView = ({ inventory, addTransaction, bomData, setBomData, apiUrl }) => {
             const [step, setStep] = useState(1);
@@ -857,7 +856,7 @@
                 </div>
             );
         };
-
+        
         const DashboardView = ({ inventory, transactions, toInventory }) => {
             const totalItems = inventory.length;
             const lowStockItems = inventory.filter(i => i.qty <= (i.minStock || 0));
