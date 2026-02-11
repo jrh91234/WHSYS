@@ -388,10 +388,10 @@
             );
         };
 
-       // --- MRP View (Updated: Summary with Level & Breakdown Modal) ---
+     // --- MRP View (Updated: Added Search Part Feature) ---
         const AdvancedMRPView = ({ inventory, addTransaction, bomData, setBomData, apiUrl }) => {
             const [step, setStep] = useState(1);
-            const [mode, setMode] = useState('plan');
+            const [mode, setMode] = useState('plan'); // 'plan', 'compare', 'search'
             const [sheetNames, setSheetNames] = useState(Object.keys(bomData) || []);
             const [currentPreviewSheet, setCurrentPreviewSheet] = useState(sheetNames[0] || "");
             
@@ -412,8 +412,12 @@
             const [finalSummary, setFinalSummary] = useState(null); 
             const [finalTree, setFinalTree] = useState(null);       
             const [resultViewMode, setResultViewMode] = useState('tree'); 
-            const [breakdownItem, setBreakdownItem] = useState(null); // New State for Breakdown Modal
+            const [breakdownItem, setBreakdownItem] = useState(null); 
             
+            // Search Part States
+            const [searchPartQuery, setSearchPartQuery] = useState("");
+            const [partSearchResults, setPartSearchResults] = useState(null);
+
             const [isLoading, setIsLoading] = useState(false);
             const [sortConfig, setSortConfig] = useState({ key: null, direction: 'ascending' });
             const [compareList, setCompareList] = useState(["", ""]);
@@ -473,7 +477,6 @@
                 matchCandidates.forEach(order => {
                     if (!order.matchedSheet) return;
 
-                    // 1. Create a Header for the Job (Parent)
                     treeResults.push({
                         type: 'JOB_HEADER',
                         partNo: order.model,
@@ -484,13 +487,11 @@
                     });
 
                     const sheetRows = bomData[order.matchedSheet];
-                    
-                    // Identify Minimum Level to exclude the Parent row itself from Picking List
                     const levels = sheetRows.slice(1).map(r => parseFloat(r[lvlCol])).filter(n => !isNaN(n));
                     const minLevel = levels.length > 0 ? Math.min(...levels) : 0;
 
                     sheetRows.forEach((row, idx) => {
-                        if (idx === 0) return; // Skip Table Header
+                        if (idx === 0) return; 
                         
                         const pNo = String(row[pNoCol] || "").trim();
                         const qpu = parseFloat(row[qtyCol]) || 0; 
@@ -500,24 +501,18 @@
 
                         if (!pNo) return;
 
-                        // ** CRITICAL LOGIC: Filter out Parent from Tree View but keep children **
-                        if (!isNaN(lvl) && lvl === minLevel) {
-                            return; 
-                        }
+                        if (!isNaN(lvl) && lvl === minLevel) { return; }
 
                         const totalReq = qpu * order.qty;
 
-                        // Add to Summary
                         if (!summaryResults[pNo]) {
                             summaryResults[pNo] = { 
                                 partNo: pNo, name: name, level: lvl, type: type, reqQty: 0, breakdown: []
                             };
                         }
                         summaryResults[pNo].reqQty += totalReq;
-                        // Store which model uses this part and how many
                         summaryResults[pNo].breakdown.push({ model: order.model, qty: totalReq });
 
-                        // Add to Tree (Picking List)
                         const stock = inventory.find(i => i.partNo === pNo);
                         const onHand = stock ? stock.qty : 0;
 
@@ -535,7 +530,6 @@
                     });
                 });
 
-                // Finalize Summary
                 const finalSum = Object.values(summaryResults).map(item => {
                     const stock = inventory.find(i => i.partNo === item.partNo);
                     const onHand = stock ? stock.qty : 0;
@@ -576,6 +570,36 @@
                 setCompResult({ models: validModels, rows });
             };
 
+            // --- New Function: Search Part ---
+            const handlePartSearch = () => {
+                if (!searchPartQuery.trim()) return alert("กรุณาพิมพ์คำค้นหา");
+                
+                const results = [];
+                const term = searchPartQuery.toLowerCase();
+
+                sheetNames.forEach(sheet => {
+                    const rows = bomData[sheet];
+                    if (!rows) return;
+                    
+                    rows.slice(1).forEach((row, idx) => { // Skip header
+                        const pNo = String(row[pNoCol] || "").trim();
+                        const name = String(row[nameCol] || "").trim();
+                        
+                        if (pNo.toLowerCase().includes(term) || name.toLowerCase().includes(term)) {
+                            results.push({
+                                partNo: pNo,
+                                name: name,
+                                model: sheet,
+                                qty: parseFloat(row[qtyCol]) || 0,
+                                type: row[typeCol] || "-"
+                            });
+                        }
+                    });
+                });
+                
+                setPartSearchResults(results);
+            };
+
             // Sorting Helper
             const requestSort = (key) => {
                 let direction = 'ascending';
@@ -607,7 +631,7 @@
             return (
                 <div className="animate-fade-in space-y-6">
                     <div className="flex bg-white p-2 rounded-xl shadow-sm border mb-6">
-                        {['1. Setup BOM', '2. Input Plan / Compare', '3. Result'].map((t, i) => (
+                        {['1. Setup BOM', '2. Functions', '3. Result'].map((t, i) => (
                             <button key={i} onClick={() => setStep(i+1)} className={`flex-1 py-2 text-sm font-bold rounded-lg ${step === i+1 ? 'bg-blue-600 text-white' : 'text-slate-400'}`}>{t}</button>
                         ))}
                     </div>
@@ -671,7 +695,7 @@
                                         <span>Level: <b className="text-purple-600">{lvlCol}</b></span>
                                         <span>Type: <b className="text-orange-600">{typeCol}</b></span>
                                     </div>
-                                    <button onClick={()=>setStep(2)} className="w-full mt-6 bg-blue-600 text-white py-3 rounded-xl font-bold">Next: Input Plan</button>
+                                    <button onClick={()=>setStep(2)} className="w-full mt-6 bg-blue-600 text-white py-3 rounded-xl font-bold">Next: Functions</button>
                                 </>
                             ) : <div className="text-center py-20 text-slate-400">กดปุ่ม Sync เพื่อโหลดข้อมูล BOM</div>}
                         </div>
@@ -679,16 +703,22 @@
 
                     {step === 2 && (
                         <div className="bg-white p-6 rounded-2xl shadow-sm border">
-                             <div className="flex gap-6 border-b mb-6"><button onClick={()=>setMode('plan')} className={`pb-3 px-2 text-sm font-bold transition ${mode==='plan'?'border-b-2 border-blue-600 text-blue-600':'text-slate-400 hover:text-slate-600'}`}><Icons.Production className="mr-1"/> Production Plan</button><button onClick={()=>setMode('compare')} className={`pb-3 px-2 text-sm font-bold transition ${mode==='compare'?'border-b-2 border-purple-600 text-purple-600':'text-slate-400 hover:text-slate-600'}`}><Icons.Compare className="mr-1"/> BOM Compare</button></div>
+                             <div className="flex gap-4 border-b mb-6 overflow-x-auto pb-1">
+                                 <button onClick={()=>setMode('plan')} className={`pb-2 px-2 text-sm font-bold whitespace-nowrap transition ${mode==='plan'?'border-b-2 border-blue-600 text-blue-600':'text-slate-400 hover:text-slate-600'}`}><Icons.Production className="mr-1"/> Production Plan</button>
+                                 <button onClick={()=>setMode('compare')} className={`pb-2 px-2 text-sm font-bold whitespace-nowrap transition ${mode==='compare'?'border-b-2 border-purple-600 text-purple-600':'text-slate-400 hover:text-slate-600'}`}><Icons.Compare className="mr-1"/> BOM Compare</button>
+                                 <button onClick={()=>setMode('search')} className={`pb-2 px-2 text-sm font-bold whitespace-nowrap transition ${mode==='search'?'border-b-2 border-orange-500 text-orange-500':'text-slate-400 hover:text-slate-600'}`}><Icons.Search className="mr-1"/> Search Part</button>
+                             </div>
                             
-                            {mode === 'plan' ? (
+                            {mode === 'plan' && (
                                 <>
                                     <textarea value={orderText} onChange={e=>setOrderText(e.target.value)} className="w-full h-40 p-4 border rounded-xl font-mono text-sm mb-4 outline-none focus:ring-2 focus:ring-blue-100" placeholder="ModelA 100&#10;ModelB 50"></textarea>
                                     <button onClick={handlePreCalculate} className="w-full bg-blue-600 text-white py-4 rounded-xl font-bold shadow-lg flex items-center justify-center gap-2">
                                         <Icons.Check/> Check & Calculate
                                     </button>
                                 </>
-                            ) : (
+                            )}
+                            
+                            {mode === 'compare' && (
                                 <>
                                     <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
                                         {compareList.map((m, i) => (
@@ -722,6 +752,61 @@
                                         </div>
                                     )}
                                 </>
+                            )}
+
+                            {mode === 'search' && (
+                                <div className="animate-fade-in">
+                                    <div className="flex gap-2 mb-6">
+                                        <input 
+                                            type="text" 
+                                            value={searchPartQuery} 
+                                            onChange={e => setSearchPartQuery(e.target.value)} 
+                                            onKeyDown={e => e.key === 'Enter' && handlePartSearch()}
+                                            className="flex-1 p-3 border rounded-xl outline-none focus:ring-2 focus:ring-orange-100" 
+                                            placeholder="ระบุ Part No หรือ ชื่อสินค้า..." 
+                                        />
+                                        <button onClick={handlePartSearch} className="bg-orange-500 text-white px-6 rounded-xl font-bold shadow-lg flex items-center gap-2">
+                                            <Icons.Search/> ค้นหา
+                                        </button>
+                                    </div>
+
+                                    {partSearchResults && (
+                                        <div className="overflow-hidden border rounded-xl">
+                                            <div className="bg-orange-50 p-3 text-xs font-bold text-orange-800 border-b">
+                                                ผลการค้นหา: พบ {partSearchResults.length} รายการ
+                                            </div>
+                                            <div className="overflow-auto max-h-96">
+                                                <table className="w-full text-xs text-left">
+                                                    <thead className="bg-white sticky top-0">
+                                                        <tr className="border-b text-slate-500">
+                                                            <th className="p-3">Part No / Name</th>
+                                                            <th className="p-3">Used In (Model)</th>
+                                                            <th className="p-3 text-right">Qty/Unit</th>
+                                                            <th className="p-3 text-center">Type</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody className="divide-y">
+                                                        {partSearchResults.length === 0 ? (
+                                                            <tr><td colSpan="4" className="p-8 text-center text-slate-400">ไม่พบข้อมูล</td></tr>
+                                                        ) : (
+                                                            partSearchResults.map((item, idx) => (
+                                                                <tr key={idx} className="hover:bg-slate-50">
+                                                                    <td className="p-3">
+                                                                        <div className="font-bold text-blue-600">{item.partNo}</div>
+                                                                        <div className="text-slate-500">{item.name}</div>
+                                                                    </td>
+                                                                    <td className="p-3 font-bold text-slate-700">{item.model}</td>
+                                                                    <td className="p-3 text-right">{formatNum(item.qty)}</td>
+                                                                    <td className="p-3 text-center">{item.type}</td>
+                                                                </tr>
+                                                            ))
+                                                        )}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
                             )}
                         </div>
                     )}
@@ -907,7 +992,6 @@
                 </div>
             );
         };
-
         
         const DashboardView = ({ inventory, transactions, toInventory }) => {
             const totalItems = inventory.length;
