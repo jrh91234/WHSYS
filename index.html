@@ -389,6 +389,7 @@
         };
 
         // --- MRP View (Header Selection Restored) ---
+        // --- MRP View (Updated with Parent-Child Tree) ---
         const AdvancedMRPView = ({ inventory, addTransaction, bomData, setBomData, apiUrl }) => {
             const [step, setStep] = useState(1);
             const [mode, setMode] = useState('plan');
@@ -402,12 +403,17 @@
             const [typeCol, setTypeCol] = useState(6);
             const [nameCol, setNameCol] = useState(3);
             
-            const [bomColWidths, setBomColWidths] = useState({}); // Restore Col Widths
+            const [bomColWidths, setBomColWidths] = useState({});
 
             const [orderText, setOrderText] = useState("");
             const [matchCandidates, setMatchCandidates] = useState([]);
             const [showConfirmModal, setShowConfirmModal] = useState(false);
-            const [finalSummary, setFinalSummary] = useState(null);
+            
+            // Result States
+            const [finalSummary, setFinalSummary] = useState(null); // แบบรวมยอด (Flat)
+            const [finalTree, setFinalTree] = useState(null);       // แบบโครงสร้าง (Tree)
+            const [resultViewMode, setResultViewMode] = useState('tree'); // 'summary' or 'tree'
+            
             const [isLoading, setIsLoading] = useState(false);
 
             // Sorting Config
@@ -427,7 +433,7 @@
                 if (!apiUrl) return alert("กรุณาตั้งค่า URL ก่อน");
                 setIsLoading(true);
                 try {
-                    const res = await fetch(apiUrl + "?action=getBOM&t=" + Date.now()); // Add timestamp
+                    const res = await fetch(apiUrl + "?action=getBOM&t=" + Date.now());
                     const json = await res.json();
                     const data = json.data || json;
                     const names = Object.keys(data).filter(k => k !== 'version');
@@ -464,39 +470,77 @@
 
             const handleCalculateFinal = () => {
                 setShowConfirmModal(false);
-                const results = {};
+                const summaryResults = {};
+                const treeResults = [];
                 
                 matchCandidates.forEach(order => {
                     if (!order.matchedSheet) return;
+                    
+                    // 1. Add Header for Tree View
+                    treeResults.push({
+                        type: 'HEADER',
+                        partNo: order.model,
+                        name: `Production Order: ${order.qty} Unit(s)`,
+                        reqQty: order.qty,
+                        level: 0,
+                        isHeader: true
+                    });
+
                     const sheetRows = bomData[order.matchedSheet];
                     sheetRows.forEach((row, idx) => {
                         if (idx === 0) return; // Skip Header
+                        
                         const pNo = String(row[pNoCol] || "").trim();
-                        const qpu = parseFloat(row[qtyCol]) || 0;
-                        if (!pNo || qpu <= 0) return;
+                        const qpu = parseFloat(row[qtyCol]) || 0; // Qty Per Unit
+                        const lvl = parseFloat(row[lvlCol]) || 1; // Level
+                        const name = row[nameCol] || "";
+                        const type = row[typeCol] || "-";
 
-                        if (!results[pNo]) {
-                            results[pNo] = { 
+                        if (!pNo) return;
+
+                        const totalReq = qpu * order.qty;
+
+                        // 2. Logic for Summary View (Aggregated)
+                        if (!summaryResults[pNo]) {
+                            summaryResults[pNo] = { 
                                 partNo: pNo, 
-                                name: row[nameCol] || "", 
-                                level: row[lvlCol] || "-",
-                                type: row[typeCol] || "-",
+                                name: name, 
+                                level: lvl,
+                                type: type,
                                 reqQty: 0,
                                 breakdown: []
                             };
                         }
-                        results[pNo].reqQty += (qpu * order.qty);
-                        results[pNo].breakdown.push({ model: order.model, qty: qpu * order.qty });
+                        summaryResults[pNo].reqQty += totalReq;
+                        summaryResults[pNo].breakdown.push({ model: order.model, qty: totalReq });
+
+                        // 3. Logic for Tree View (Hierarchical)
+                        const stock = inventory.find(i => i.partNo === pNo);
+                        const onHand = stock ? stock.qty : 0;
+
+                        treeResults.push({
+                            partNo: pNo,
+                            name: name,
+                            level: lvl,
+                            type: type,
+                            reqQty: totalReq,
+                            qpu: qpu, // Qty per unit
+                            onHand: onHand,
+                            diff: onHand - totalReq, // Note: This diff is purely mathematical per line, generally Inventory is checked against TOTAL summary
+                            parentModel: order.model
+                        });
                     });
                 });
 
-                const final = Object.values(results).map(item => {
+                // Finalize Summary List
+                const finalSum = Object.values(summaryResults).map(item => {
                     const stock = inventory.find(i => i.partNo === item.partNo);
                     const onHand = stock ? stock.qty : 0;
                     return { ...item, onHand, diff: onHand - item.reqQty };
                 });
 
-                setFinalSummary(final);
+                setFinalSummary(finalSum);
+                setFinalTree(treeResults);
                 setStep(3);
             };
 
@@ -544,19 +588,10 @@
                     sortableItems.sort((a, b) => {
                         let aValue = a[sortConfig.key];
                         let bValue = b[sortConfig.key];
-                        
-                        // Try numeric sort
                         const aNum = parseFloat(aValue);
                         const bNum = parseFloat(bValue);
-                        if (!isNaN(aNum) && !isNaN(bNum)) {
-                            aValue = aNum;
-                            bValue = bNum;
-                        } else {
-                            // Fallback to string sort
-                            aValue = String(aValue).toLowerCase();
-                            bValue = String(bValue).toLowerCase();
-                        }
-
+                        if (!isNaN(aNum) && !isNaN(bNum)) { aValue = aNum; bValue = bNum; } 
+                        else { aValue = String(aValue).toLowerCase(); bValue = String(bValue).toLowerCase(); }
                         if (aValue < bValue) return sortConfig.direction === 'ascending' ? -1 : 1;
                         if (aValue > bValue) return sortConfig.direction === 'ascending' ? 1 : -1;
                         return 0;
@@ -588,7 +623,6 @@
                                         {sheetNames.map(n => <button key={n} onClick={()=>setCurrentPreviewSheet(n)} className={`px-3 py-1 rounded-full text-xs whitespace-nowrap border ${currentPreviewSheet===n?'bg-slate-800 text-white':'bg-white'}`}>{n}</button>)}
                                     </div>
                                     
-                                    {/* --- Table Header Selection (Restored) --- */}
                                     <div className="overflow-x-auto border rounded-xl h-96 text-xs">
                                         <table className="w-max border-collapse">
                                             <thead className="bg-white sticky top-0 z-10 shadow-sm">
@@ -688,44 +722,104 @@
                         </div>
                     )}
 
-                    {step === 3 && finalSummary && (
+                    {step === 3 && (finalSummary || finalTree) && (
                         <div className="bg-white p-6 rounded-2xl shadow-sm border">
                             <div className="flex justify-between items-center mb-6">
                                 <h3 className="font-bold">MRP Result</h3>
-                                <button onClick={()=>exportToExcel(finalSummary, "MRP_Result")} className="text-green-600 font-bold text-sm flex items-center gap-2"><Icons.Excel/> Export</button>
+                                <div className="flex gap-2">
+                                    <div className="bg-slate-100 p-1 rounded-lg flex text-xs font-bold">
+                                        <button onClick={()=>setResultViewMode('tree')} className={`px-3 py-1.5 rounded-md transition ${resultViewMode==='tree'?'bg-white shadow text-blue-600':'text-slate-500'}`}>Tree View</button>
+                                        <button onClick={()=>setResultViewMode('summary')} className={`px-3 py-1.5 rounded-md transition ${resultViewMode==='summary'?'bg-white shadow text-blue-600':'text-slate-500'}`}>Summary</button>
+                                    </div>
+                                    <button onClick={()=>exportToExcel(resultViewMode === 'tree' ? finalTree : finalSummary, "MRP_Result")} className="text-green-600 font-bold text-sm flex items-center gap-2 px-3 py-1 hover:bg-green-50 rounded"><Icons.Excel/> Export</button>
+                                </div>
                             </div>
-                            <div className="overflow-auto max-h-[60vh]">
-                                <table className="w-full text-xs text-left">
-                                    <thead className="bg-slate-50 sticky top-0 cursor-pointer">
-                                        <tr>
-                                            <th className="p-3 border hover:bg-slate-100" onClick={()=>requestSort('level')}>Level {sortConfig.key==='level' && <Icons.Sort/>}</th>
-                                            <th className="p-3 border hover:bg-slate-100" onClick={()=>requestSort('partNo')}>Part No {sortConfig.key==='partNo' && <Icons.Sort/>}</th>
-                                            <th className="p-3 border hover:bg-slate-100" onClick={()=>requestSort('name')}>Description {sortConfig.key==='name' && <Icons.Sort/>}</th>
-                                            <th className="p-3 border hover:bg-slate-100" onClick={()=>requestSort('type')}>Type {sortConfig.key==='type' && <Icons.Sort/>}</th>
-                                            <th className="p-3 border text-right hover:bg-slate-100" onClick={()=>requestSort('reqQty')}>Required {sortConfig.key==='reqQty' && <Icons.Sort/>}</th>
-                                            <th className="p-3 border text-right hover:bg-slate-100" onClick={()=>requestSort('onHand')}>Stock {sortConfig.key==='onHand' && <Icons.Sort/>}</th>
-                                            <th className="p-3 border text-right hover:bg-slate-100" onClick={()=>requestSort('diff')}>Balance {sortConfig.key==='diff' && <Icons.Sort/>}</th>
-                                            <th className="p-3 border text-center">Status</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {sortedSummary.map((item, i) => (
-                                            <tr key={i} className={item.diff < 0 ? 'bg-red-50' : ''}>
-                                                <td className="p-3 border text-slate-500 font-mono">{item.level}</td>
-                                                <td className="p-3 border font-mono font-bold">{item.partNo}</td>
-                                                <td className="p-3 border text-slate-500">{item.name}</td>
-                                                <td className="p-3 border text-slate-500">{item.type}</td>
-                                                <td className="p-3 border text-right font-bold">{formatNum(item.reqQty)}</td>
-                                                <td className="p-3 border text-right">{formatNum(item.onHand)}</td>
-                                                <td className={`p-3 border text-right font-bold ${item.diff < 0 ? 'text-red-600' : 'text-green-600'}`}>{formatNum(item.diff)}</td>
-                                                <td className="p-3 border text-center">
-                                                    {item.diff < 0 ? <span className="text-[10px] bg-red-600 text-white px-2 py-0.5 rounded">Short</span> : <span className="text-[10px] bg-green-600 text-white px-2 py-0.5 rounded">OK</span>}
-                                                </td>
+
+                            {resultViewMode === 'summary' ? (
+                                // --- SUMMARY VIEW (Aggregated) ---
+                                <div className="overflow-auto max-h-[60vh]">
+                                    <table className="w-full text-xs text-left">
+                                        <thead className="bg-slate-50 sticky top-0 cursor-pointer shadow-sm">
+                                            <tr>
+                                                <th className="p-3 border hover:bg-slate-100" onClick={()=>requestSort('level')}>Level {sortConfig.key==='level' && <Icons.Sort/>}</th>
+                                                <th className="p-3 border hover:bg-slate-100" onClick={()=>requestSort('partNo')}>Part No {sortConfig.key==='partNo' && <Icons.Sort/>}</th>
+                                                <th className="p-3 border hover:bg-slate-100" onClick={()=>requestSort('name')}>Description {sortConfig.key==='name' && <Icons.Sort/>}</th>
+                                                <th className="p-3 border hover:bg-slate-100" onClick={()=>requestSort('type')}>Type {sortConfig.key==='type' && <Icons.Sort/>}</th>
+                                                <th className="p-3 border text-right hover:bg-slate-100" onClick={()=>requestSort('reqQty')}>Total Req {sortConfig.key==='reqQty' && <Icons.Sort/>}</th>
+                                                <th className="p-3 border text-right hover:bg-slate-100" onClick={()=>requestSort('onHand')}>Stock {sortConfig.key==='onHand' && <Icons.Sort/>}</th>
+                                                <th className="p-3 border text-right hover:bg-slate-100" onClick={()=>requestSort('diff')}>Balance {sortConfig.key==='diff' && <Icons.Sort/>}</th>
+                                                <th className="p-3 border text-center">Status</th>
                                             </tr>
-                                        ))}
-                                    </tbody>
-                                </table>
-                            </div>
+                                        </thead>
+                                        <tbody>
+                                            {sortedSummary.map((item, i) => (
+                                                <tr key={i} className={item.diff < 0 ? 'bg-red-50' : ''}>
+                                                    <td className="p-3 border text-slate-500 font-mono text-center">{item.level}</td>
+                                                    <td className="p-3 border font-mono font-bold">{item.partNo}</td>
+                                                    <td className="p-3 border text-slate-500">{item.name}</td>
+                                                    <td className="p-3 border text-slate-500">{item.type}</td>
+                                                    <td className="p-3 border text-right font-bold">{formatNum(item.reqQty)}</td>
+                                                    <td className="p-3 border text-right">{formatNum(item.onHand)}</td>
+                                                    <td className={`p-3 border text-right font-bold ${item.diff < 0 ? 'text-red-600' : 'text-green-600'}`}>{formatNum(item.diff)}</td>
+                                                    <td className="p-3 border text-center">
+                                                        {item.diff < 0 ? <span className="text-[10px] bg-red-600 text-white px-2 py-0.5 rounded">Short</span> : <span className="text-[10px] bg-green-600 text-white px-2 py-0.5 rounded">OK</span>}
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            ) : (
+                                // --- TREE VIEW (Parent-Child) ---
+                                <div className="overflow-auto max-h-[60vh]">
+                                    <table className="w-full text-xs text-left">
+                                        <thead className="bg-slate-50 sticky top-0 shadow-sm">
+                                            <tr>
+                                                <th className="p-3 border w-1/3">Part Structure (Parent/Child)</th>
+                                                <th className="p-3 border">Description</th>
+                                                <th className="p-3 border text-center">Type</th>
+                                                <th className="p-3 border text-right">QPU</th>
+                                                <th className="p-3 border text-right">Req Qty</th>
+                                                <th className="p-3 border text-right">Stock</th>
+                                                <th className="p-3 border text-right">Balance</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {finalTree.map((row, i) => {
+                                                if (row.isHeader) {
+                                                    return (
+                                                        <tr key={i} className="bg-slate-200 text-slate-700 font-bold border-t-2 border-slate-300">
+                                                            <td colSpan={7} className="p-3"><i className="fa-solid fa-clipboard-list mr-2"></i>{row.name}</td>
+                                                        </tr>
+                                                    );
+                                                }
+                                                // Calculate indentation based on level (assuming level 1 is top)
+                                                const indent = Math.max(0, (row.level - 1) * 20); 
+                                                const isChild = row.level > 1;
+
+                                                return (
+                                                    <tr key={i} className={`border-b ${row.diff < 0 ? 'bg-red-50' : 'hover:bg-slate-50'}`}>
+                                                        <td className="p-3 border font-mono">
+                                                            <div style={{ paddingLeft: `${indent}px` }} className="flex items-center">
+                                                                {isChild && <span className="text-slate-300 mr-1">└─</span>}
+                                                                <span className={isChild ? 'text-slate-600' : 'font-bold text-blue-700'}>{row.partNo}</span>
+                                                            </div>
+                                                        </td>
+                                                        <td className="p-3 border text-slate-500">{row.name}</td>
+                                                        <td className="p-3 border text-center text-slate-400">{row.type}</td>
+                                                        <td className="p-3 border text-right text-slate-400">{formatNum(row.qpu)}</td>
+                                                        <td className="p-3 border text-right font-bold text-slate-700">{formatNum(row.reqQty)}</td>
+                                                        <td className="p-3 border text-right text-slate-500">{formatNum(row.onHand)}</td>
+                                                        <td className={`p-3 border text-right font-bold ${row.diff < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                                                            {formatNum(row.diff)}
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            )}
                         </div>
                     )}
 
