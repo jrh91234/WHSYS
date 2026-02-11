@@ -389,6 +389,7 @@
         };
 
         // --- MRP View (Updated with Parent-Child Tree) ---
+      // --- MRP View (Updated with Parent-Child in Summary) ---
         const AdvancedMRPView = ({ inventory, addTransaction, bomData, setBomData, apiUrl }) => {
             const [step, setStep] = useState(1);
             const [mode, setMode] = useState('plan');
@@ -511,6 +512,7 @@
                             };
                         }
                         summaryResults[pNo].reqQty += totalReq;
+                        // Add breakdown info (Parent -> Child relation reversed for summary)
                         summaryResults[pNo].breakdown.push({ model: order.model, qty: totalReq });
 
                         // 3. Logic for Tree View (Hierarchical)
@@ -525,7 +527,7 @@
                             reqQty: totalReq,
                             qpu: qpu, // Qty per unit
                             onHand: onHand,
-                            diff: onHand - totalReq, // Note: This diff is purely mathematical per line, generally Inventory is checked against TOTAL summary
+                            diff: onHand - totalReq, 
                             parentModel: order.model
                         });
                     });
@@ -541,6 +543,7 @@
                 setFinalSummary(finalSum);
                 setFinalTree(treeResults);
                 setStep(3);
+                setResultViewMode('tree'); // Default to Tree view as requested
             };
 
             const handleCompare = () => {
@@ -727,8 +730,8 @@
                                 <h3 className="font-bold">MRP Result</h3>
                                 <div className="flex gap-2">
                                     <div className="bg-slate-100 p-1 rounded-lg flex text-xs font-bold">
-                                        <button onClick={()=>setResultViewMode('tree')} className={`px-3 py-1.5 rounded-md transition ${resultViewMode==='tree'?'bg-white shadow text-blue-600':'text-slate-500'}`}>Tree View</button>
-                                        <button onClick={()=>setResultViewMode('summary')} className={`px-3 py-1.5 rounded-md transition ${resultViewMode==='summary'?'bg-white shadow text-blue-600':'text-slate-500'}`}>Summary</button>
+                                        <button onClick={()=>setResultViewMode('tree')} className={`px-3 py-1.5 rounded-md transition ${resultViewMode==='tree'?'bg-white shadow text-blue-600':'text-slate-500'}`}>Structure (Tree)</button>
+                                        <button onClick={()=>setResultViewMode('summary')} className={`px-3 py-1.5 rounded-md transition ${resultViewMode==='summary'?'bg-white shadow text-blue-600':'text-slate-500'}`}>Total Summary</button>
                                     </div>
                                     <button onClick={()=>exportToExcel(resultViewMode === 'tree' ? finalTree : finalSummary, "MRP_Result")} className="text-green-600 font-bold text-sm flex items-center gap-2 px-3 py-1 hover:bg-green-50 rounded"><Icons.Excel/> Export</button>
                                 </div>
@@ -743,6 +746,9 @@
                                                 <th className="p-3 border hover:bg-slate-100" onClick={()=>requestSort('level')}>Level {sortConfig.key==='level' && <Icons.Sort/>}</th>
                                                 <th className="p-3 border hover:bg-slate-100" onClick={()=>requestSort('partNo')}>Part No {sortConfig.key==='partNo' && <Icons.Sort/>}</th>
                                                 <th className="p-3 border hover:bg-slate-100" onClick={()=>requestSort('name')}>Description {sortConfig.key==='name' && <Icons.Sort/>}</th>
+                                                {/* NEW COLUMN: Sources / Parents */}
+                                                <th className="p-3 border hover:bg-slate-100">Sources / Parents</th>
+                                                
                                                 <th className="p-3 border hover:bg-slate-100" onClick={()=>requestSort('type')}>Type {sortConfig.key==='type' && <Icons.Sort/>}</th>
                                                 <th className="p-3 border text-right hover:bg-slate-100" onClick={()=>requestSort('reqQty')}>Total Req {sortConfig.key==='reqQty' && <Icons.Sort/>}</th>
                                                 <th className="p-3 border text-right hover:bg-slate-100" onClick={()=>requestSort('onHand')}>Stock {sortConfig.key==='onHand' && <Icons.Sort/>}</th>
@@ -756,6 +762,16 @@
                                                     <td className="p-3 border text-slate-500 font-mono text-center">{item.level}</td>
                                                     <td className="p-3 border font-mono font-bold">{item.partNo}</td>
                                                     <td className="p-3 border text-slate-500">{item.name}</td>
+                                                    
+                                                    {/* NEW COLUMN DATA: Sources / Parents */}
+                                                    <td className="p-3 border text-[10px] text-slate-500 max-w-[200px] overflow-hidden">
+                                                        {item.breakdown.map((b, bi) => (
+                                                            <div key={bi} className="truncate">
+                                                                <span className="font-bold text-slate-700">{b.model}</span>: {formatNum(b.qty)}
+                                                            </div>
+                                                        ))}
+                                                    </td>
+
                                                     <td className="p-3 border text-slate-500">{item.type}</td>
                                                     <td className="p-3 border text-right font-bold">{formatNum(item.reqQty)}</td>
                                                     <td className="p-3 border text-right">{formatNum(item.onHand)}</td>
