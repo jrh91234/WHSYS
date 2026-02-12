@@ -1163,7 +1163,8 @@
                         });
 
                         setInventory(newInventory);
-                        addTransaction(`Import Excel: New ${newCount}, Updated ${updateCount}, Errors ${errorCount}`);
+                        // Fixed: Correct addTransaction signature
+                        addTransaction('ADJUST', 'SYSTEM', 0, 'IMPORT', `Excel Import: New ${newCount}, Updated ${updateCount}`);
                         alert(`นำเข้าสำเร็จ!\n- รายการใหม่: ${newCount}\n- อัปเดต: ${updateCount}\n- ข้าม (ข้อมูลไม่ครบ): ${errorCount}`);
 
                     } catch (error) {
@@ -1181,7 +1182,8 @@
             const handleDelete = (partNo) => {
                 if(confirm(`Delete ${partNo}?`)) {
                     setInventory(inventory.filter(i => String(i.partNo) !== String(partNo)));
-                    addTransaction(`Deleted ${partNo}`);
+                    // Fixed: Correct addTransaction signature
+                    addTransaction('ADJUST', partNo, 0, 'DELETE', 'Item Deleted');
                 }
             };
 
@@ -1205,11 +1207,13 @@
                     const newInv = [...inventory];
                     newInv[existingIdx] = item;
                     setInventory(newInv);
-                    addTransaction(`Updated ${item.partNo}`);
+                    // Fixed: Correct addTransaction signature
+                    addTransaction('ADJUST', item.partNo, item.qty, 'EDIT', 'Manual Edit');
                 } else {
                     if (existingIdx > -1) return alert("Part No already exists!");
                     setInventory([...inventory, item]);
-                    addTransaction(`Added ${item.partNo}`);
+                    // Fixed: Correct addTransaction signature
+                    addTransaction('INIT', item.partNo, item.qty, 'NEW', 'Added via Form', item);
                 }
                 setIsModalOpen(false);
             };
@@ -1269,10 +1273,10 @@
                                         <tr><td colSpan="7" className="p-8 text-center text-slate-400">ไม่พบรายการสินค้า</td></tr>
                                     ) : (
                                         filteredInventory.map((item, i) => {
-                                            // Safety checks for undefined/null values
-                                            const qty = Number(item.qty) || 0;
-                                            const min = Number(item.min || item.minStock) || 0;
-                                            const cost = Number(item.cost) || 0;
+                                            // FIXED: Ensure numeric values fallback to 0 before calling toLocaleString()
+                                            const qty = parseFloat(item.qty) || 0;
+                                            const min = parseFloat(item.min ?? item.minStock) || 0;
+                                            const cost = parseFloat(item.cost) || 0;
                                             const unit = item.unit || "-";
                                             const type = item.type || "-";
 
