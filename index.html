@@ -1074,100 +1074,273 @@
             );
         };
 
-        const InventoryView = ({ inventory, addTransaction, deleteItem }) => {
-            const [search, setSearch] = useState("");
-            const [modal, setModal] = useState(null); 
-            const [selected, setSelected] = useState(null);
-            const [form, setForm] = useState({ partNo: "", name: "", qty: 0, location: "", minStock: 0, refDoc: "" });
+// --- Inventory View (Updated with Excel Import/Export & Validation) ---
+        const InventoryView = ({ inventory, setInventory, addTransaction }) => {
+            const [searchTerm, setSearchTerm] = useState("");
+            const [editItem, setEditItem] = useState(null);
+            const [isModalOpen, setIsModalOpen] = useState(false);
+            const fileInputRef = useRef(null);
 
-            const filtered = inventory.filter(i => String(i.partNo || "").toLowerCase().includes(search.toLowerCase()) || String(i.name || "").toLowerCase().includes(search.toLowerCase()));
-
-            const openModal = (type, item = null) => {
-                setModal(type);
-                setSelected(item);
-                if (type === 'ADD') setForm({ partNo: "", name: "", qty: 0, location: "", minStock: 0, refDoc: "" });
-                else setForm({ ...form, qty: 0, refDoc: "" });
+            // --- 1. Download Template Function ---
+            const handleDownloadTemplate = () => {
+                const templateData = [
+                    { 
+                        PartNo: "EX-001", 
+                        Name: "Example Part", 
+                        Qty: 100, 
+                        Unit: "pcs", 
+                        Cost: 10.5, 
+                        Type: "Raw Material", 
+                        Min: 10, 
+                        Max: 1000 
+                    }
+                ];
+                
+                const ws = XLSX.utils.json_to_sheet(templateData);
+                const wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ws, "Template");
+                XLSX.writeFile(wb, "Inventory_Template.xlsx");
             };
 
-            const handleSubmit = () => {
-                if (modal === 'ADD') {
-                    if (inventory.some(i => i.partNo === form.partNo)) return alert("Part No ซ้ำ");
-                    addTransaction('INIT', form.partNo, form.qty, 'INIT', 'New Item', { 
-                        partNo: form.partNo, name: form.name, qty: form.qty, location: form.location, minStock: form.minStock 
-                    });
-                } else {
-                     if (modal === 'OUT' && selected.qty < form.qty) return alert("ของในคลังไม่พอ");
-                     addTransaction(modal, selected.partNo, form.qty, form.refDoc, "Manual");
+            // --- 2. Import Excel Function with Validation ---
+            const handleImportExcel = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+
+                const reader = new FileReader();
+                reader.onload = (evt) => {
+                    try {
+                        const bstr = evt.target.result;
+                        const wb = XLSX.read(bstr, { type: 'binary' });
+                        const wsname = wb.SheetNames[0];
+                        const ws = wb.Sheets[wsname];
+                        const data = XLSX.utils.sheet_to_json(ws);
+
+                        if (data.length === 0) {
+                            alert("ไม่พบข้อมูลในไฟล์ Excel");
+                            return;
+                        }
+
+                        // Validation & Processing
+                        let newCount = 0;
+                        let updateCount = 0;
+                        let errorCount = 0;
+                        
+                        const newInventory = [...inventory];
+
+                        data.forEach((row, index) => {
+                            // Check Essential Field: PartNo
+                            if (!row.PartNo) {
+                                errorCount++;
+                                return; 
+                            }
+
+                            const partNo = String(row.PartNo).trim();
+                            const existingIndex = newInventory.findIndex(i => i.partNo === partNo);
+
+                            // Format Data (Default values if missing)
+                            const itemData = {
+                                partNo: partNo,
+                                name: row.Name || "Unknown",
+                                qty: parseFloat(row.Qty) || 0,
+                                unit: row.Unit || "pcs",
+                                cost: parseFloat(row.Cost) || 0,
+                                type: row.Type || "General",
+                                min: parseFloat(row.Min) || 0,
+                                max: parseFloat(row.Max) || 0,
+                                lastUpdated: new Date().toISOString()
+                            };
+
+                            if (existingIndex > -1) {
+                                // Update existing
+                                newInventory[existingIndex] = { ...newInventory[existingIndex], ...itemData };
+                                updateCount++;
+                            } else {
+                                // Add new
+                                newInventory.push(itemData);
+                                newCount++;
+                            }
+                        });
+
+                        setInventory(newInventory);
+                        addTransaction(`Import Excel: New ${newCount}, Updated ${updateCount}, Errors ${errorCount}`);
+                        alert(`นำเข้าสำเร็จ!\n- รายการใหม่: ${newCount}\n- อัปเดต: ${updateCount}\n- ข้าม (ข้อมูลไม่ครบ): ${errorCount}`);
+
+                    } catch (error) {
+                        console.error(error);
+                        alert("เกิดข้อผิดพลาดในการอ่านไฟล์: " + error.message);
+                    } finally {
+                        // Reset input to allow re-uploading same file
+                        e.target.value = ""; 
+                    }
+                };
+                reader.readAsBinaryString(file);
+            };
+
+            // --- CRUD Handlers ---
+            const handleDelete = (partNo) => {
+                if(confirm(`Delete ${partNo}?`)) {
+                    setInventory(inventory.filter(i => i.partNo !== partNo));
+                    addTransaction(`Deleted ${partNo}`);
                 }
-                setModal(null);
             };
+
+            const handleSaveItem = (e) => {
+                e.preventDefault();
+                const formData = new FormData(e.target);
+                const item = {
+                    partNo: formData.get('partNo'),
+                    name: formData.get('name'),
+                    qty: parseFloat(formData.get('qty')) || 0,
+                    unit: formData.get('unit'),
+                    cost: parseFloat(formData.get('cost')) || 0,
+                    type: formData.get('type'),
+                    min: parseFloat(formData.get('min')) || 0,
+                    max: parseFloat(formData.get('max')) || 0,
+                    lastUpdated: new Date().toISOString()
+                };
+
+                const existingIdx = inventory.findIndex(i => i.partNo === item.partNo);
+                if (editItem && existingIdx > -1) {
+                    const newInv = [...inventory];
+                    newInv[existingIdx] = item;
+                    setInventory(newInv);
+                    addTransaction(`Updated ${item.partNo}`);
+                } else {
+                    if (existingIdx > -1) return alert("Part No already exists!");
+                    setInventory([...inventory, item]);
+                    addTransaction(`Added ${item.partNo}`);
+                }
+                setIsModalOpen(false);
+            };
+
+            const filteredInventory = inventory.filter(i => 
+                i.partNo.toLowerCase().includes(searchTerm.toLowerCase()) || 
+                i.name.toLowerCase().includes(searchTerm.toLowerCase())
+            );
 
             return (
-                <div className="space-y-6 h-full flex flex-col">
-                    <div className="flex justify-between items-center">
-                        <h2 className="text-2xl font-bold">Inventory</h2>
-                        <div className="flex gap-2">
-                            <input type="text" placeholder="ค้นหา..." className="p-2 border rounded-lg text-sm w-32 md:w-auto" onChange={e=>setSearch(e.target.value)}/>
-                            <button onClick={()=>openModal('ADD')} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-bold shadow">+ New Item</button>
+                <div className="animate-fade-in space-y-6">
+                    {/* Toolbar */}
+                    <div className="flex flex-col md:flex-row justify-between items-center gap-4 bg-white p-4 rounded-xl shadow-sm border">
+                        <div className="flex gap-2 w-full md:w-auto">
+                            <input 
+                                type="text" 
+                                placeholder="Search Part No / Name..." 
+                                value={searchTerm}
+                                onChange={e=>setSearchTerm(e.target.value)}
+                                className="p-2 border rounded-lg w-full md:w-64 outline-none focus:ring-2 focus:ring-blue-100"
+                            />
+                        </div>
+                        <div className="flex gap-2 w-full md:w-auto overflow-x-auto">
+                            <button onClick={handleDownloadTemplate} className="bg-slate-100 text-slate-600 px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 hover:bg-slate-200 whitespace-nowrap">
+                                <i className="fa-solid fa-file-arrow-down"></i> Template
+                            </button>
+                            
+                            <input type="file" ref={fileInputRef} onChange={handleImportExcel} className="hidden" accept=".xlsx, .xls" />
+                            <button onClick={() => fileInputRef.current.click()} className="bg-green-600 text-white px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 hover:bg-green-700 whitespace-nowrap">
+                                <i className="fa-solid fa-file-excel"></i> Import
+                            </button>
+
+                            <button onClick={()=>{setEditItem(null); setIsModalOpen(true);}} className="bg-blue-600 text-white px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 hover:bg-blue-700 whitespace-nowrap">
+                                <i className="fa-solid fa-plus"></i> Add Item
+                            </button>
                         </div>
                     </div>
-                    <div className="flex-1 bg-white rounded-2xl shadow-sm border overflow-hidden overflow-y-auto">
-                        <table className="w-full text-sm text-left">
-                            <thead className="bg-slate-50 sticky top-0 z-10">
-                                <tr>
-                                    <th className="p-4 border-b">Part No</th>
-                                    <th className="p-4 border-b">Name</th>
-                                    <th className="p-4 border-b text-center">Loc</th>
-                                    <th className="p-4 border-b text-right">Qty</th>
-                                    <th className="p-4 border-b text-center">Action</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {filtered.map(i => (
-                                    <tr key={i.partNo} className="hover:bg-slate-50 border-b border-slate-50">
-                                        <td className="p-4 font-mono font-bold text-blue-700">{i.partNo}</td>
-                                        <td className="p-4 text-slate-500">{i.name}</td>
-                                        <td className="p-4 text-center"><span className="bg-slate-100 px-2 py-1 rounded text-xs">{i.location}</span></td>
-                                        <td className={`p-4 text-right font-bold ${i.qty <= i.minStock ? 'text-red-600' : ''}`}>{formatNum(i.qty)}</td>
-                                        <td className="p-4 text-center space-x-2">
-                                            <button onClick={()=>openModal('IN', i)} className="p-1.5 bg-green-100 text-green-600 rounded hover:bg-green-200"><Icons.Plus/></button>
-                                            <button onClick={()=>openModal('OUT', i)} className="p-1.5 bg-red-100 text-red-600 rounded hover:bg-red-200"><Icons.Minus/></button>
-                                            <button onClick={()=>deleteItem(i.partNo)} className="p-1.5 text-slate-400 hover:text-red-500"><Icons.Trash/></button>
-                                        </td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    </div>
-                    {modal && (
-                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 modal-overlay">
-                            <div className="bg-white p-6 rounded-2xl w-full max-w-sm animate-fade-in shadow-2xl">
-                                <h3 className="font-bold mb-4 flex items-center gap-2">
-                                    {modal === 'ADD' ? <Icons.Box className="text-blue-500"/> : (modal==='IN' ? <Icons.Plus className="text-green-500"/> : <Icons.Minus className="text-red-500"/>)}
-                                    {modal === 'ADD' ? 'เพิ่มสินค้าใหม่' : (modal==='IN'?'รับเข้า':'เบิกออก')} : {selected?.partNo}
-                                </h3>
-                                
-                                {modal === 'ADD' ? (
-                                    <div className="space-y-3">
-                                        <input className="w-full p-2 border rounded" placeholder="Part No" value={form.partNo} onChange={e=>setForm({...form, partNo: e.target.value})}/>
-                                        <input className="w-full p-2 border rounded" placeholder="Name" value={form.name} onChange={e=>setForm({...form, name: e.target.value})}/>
-                                        <div className="flex gap-2">
-                                            <input className="w-full p-2 border rounded" placeholder="Location" value={form.location} onChange={e=>setForm({...form, location: e.target.value})}/>
-                                            <input type="number" className="w-full p-2 border rounded" placeholder="Min Stock" value={form.minStock} onChange={e=>setForm({...form, minStock: parseFloat(e.target.value)})}/>
-                                        </div>
-                                        <input type="number" className="w-full p-2 border rounded" placeholder="Initial Qty" value={form.qty} onChange={e=>setForm({...form, qty: parseFloat(e.target.value)})}/>
-                                    </div>
-                                ) : (
-                                    <div className="space-y-3">
-                                        <input type="number" autoFocus className="w-full p-4 border-2 border-blue-100 rounded-xl text-center text-3xl font-bold text-blue-600 outline-none" placeholder="0" onChange={e=>setForm({...form, qty: parseFloat(e.target.value)})}/>
-                                        <input className="w-full p-2 border rounded text-sm" placeholder="Ref Doc / Note" onChange={e=>setForm({...form, refDoc: e.target.value})}/>
-                                    </div>
-                                )}
 
-                                <div className="flex gap-2 mt-6">
-                                    <button onClick={()=>setModal(null)} className="flex-1 py-3 bg-slate-100 rounded-xl font-bold text-slate-500">Cancel</button>
-                                    <button onClick={handleSubmit} className={`flex-1 py-3 text-white rounded-xl font-bold ${modal==='OUT'?'bg-red-600':'bg-blue-600'}`}>Confirm</button>
+                    {/* Table */}
+                    <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-sm text-left">
+                                <thead className="bg-slate-50 text-slate-500 font-bold border-b">
+                                    <tr>
+                                        <th className="p-4">Part No</th>
+                                        <th className="p-4">Description</th>
+                                        <th className="p-4 text-right">Qty</th>
+                                        <th className="p-4 text-center">Unit</th>
+                                        <th className="p-4 text-right">Cost</th>
+                                        <th className="p-4 text-center">Type</th>
+                                        <th className="p-4 text-center">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y">
+                                    {filteredInventory.length === 0 ? (
+                                        <tr><td colSpan="7" className="p-8 text-center text-slate-400">ไม่พบรายการสินค้า</td></tr>
+                                    ) : (
+                                        filteredInventory.map((item, i) => (
+                                            <tr key={i} className="hover:bg-slate-50 transition">
+                                                <td className="p-4 font-mono font-bold text-blue-600">{item.partNo}</td>
+                                                <td className="p-4 text-slate-600">{item.name}</td>
+                                                <td className={`p-4 text-right font-bold ${item.qty <= item.min ? 'text-red-500' : 'text-slate-700'}`}>
+                                                    {item.qty.toLocaleString()}
+                                                    {item.qty <= item.min && <i className="fa-solid fa-triangle-exclamation ml-2 text-xs" title="Low Stock"></i>}
+                                                </td>
+                                                <td className="p-4 text-center text-slate-400 text-xs">{item.unit}</td>
+                                                <td className="p-4 text-right text-slate-500">{item.cost.toLocaleString()}</td>
+                                                <td className="p-4 text-center"><span className="bg-slate-100 text-slate-500 px-2 py-1 rounded text-xs">{item.type}</span></td>
+                                                <td className="p-4 text-center">
+                                                    <div className="flex justify-center gap-2">
+                                                        <button onClick={()=>{setEditItem(item); setIsModalOpen(true);}} className="text-slate-400 hover:text-blue-600"><i className="fa-solid fa-pen-to-square"></i></button>
+                                                        <button onClick={()=>handleDelete(item.partNo)} className="text-slate-400 hover:text-red-600"><i className="fa-solid fa-trash"></i></button>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        ))
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    {/* Modal */}
+                    {isModalOpen && (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-fade-in">
+                            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden">
+                                <div className="p-6 border-b flex justify-between items-center bg-slate-50">
+                                    <h3 className="font-bold text-lg">{editItem ? 'Edit Item' : 'New Item'}</h3>
+                                    <button onClick={()=>setIsModalOpen(false)} className="text-slate-400 hover:text-slate-600"><i className="fa-solid fa-xmark text-xl"></i></button>
                                 </div>
+                                <form onSubmit={handleSaveItem} className="p-6 space-y-4">
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div className="col-span-2 sm:col-span-1">
+                                            <label className="block text-xs font-bold text-slate-500 mb-1">Part No</label>
+                                            <input name="partNo" defaultValue={editItem?.partNo} required className="w-full p-2 border rounded-lg bg-slate-50 outline-none focus:ring-2 focus:ring-blue-100" readOnly={!!editItem} />
+                                        </div>
+                                        <div className="col-span-2 sm:col-span-1">
+                                            <label className="block text-xs font-bold text-slate-500 mb-1">Type</label>
+                                            <select name="type" defaultValue={editItem?.type || "General"} className="w-full p-2 border rounded-lg bg-white outline-none focus:ring-2 focus:ring-blue-100">
+                                                <option value="General">General</option>
+                                                <option value="Raw Material">Raw Material</option>
+                                                <option value="Work in Process">Work in Process</option>
+                                                <option value="Finished Goods">Finished Goods</option>
+                                            </select>
+                                        </div>
+                                        <div className="col-span-2">
+                                            <label className="block text-xs font-bold text-slate-500 mb-1">Description</label>
+                                            <input name="name" defaultValue={editItem?.name} required className="w-full p-2 border rounded-lg outline-none focus:ring-2 focus:ring-blue-100" />
+                                        </div>
+                                        <div className="col-span-1">
+                                            <label className="block text-xs font-bold text-slate-500 mb-1">Quantity</label>
+                                            <input name="qty" type="number" step="0.01" defaultValue={editItem?.qty} required className="w-full p-2 border rounded-lg outline-none focus:ring-2 focus:ring-blue-100" />
+                                        </div>
+                                        <div className="col-span-1">
+                                            <label className="block text-xs font-bold text-slate-500 mb-1">Unit</label>
+                                            <input name="unit" defaultValue={editItem?.unit || "pcs"} className="w-full p-2 border rounded-lg outline-none focus:ring-2 focus:ring-blue-100" />
+                                        </div>
+                                        <div className="col-span-1">
+                                            <label className="block text-xs font-bold text-slate-500 mb-1">Cost</label>
+                                            <input name="cost" type="number" step="0.01" defaultValue={editItem?.cost} className="w-full p-2 border rounded-lg outline-none focus:ring-2 focus:ring-blue-100" />
+                                        </div>
+                                        <div className="col-span-1">
+                                            <label className="block text-xs font-bold text-slate-500 mb-1">Safety Stock (Min)</label>
+                                            <input name="min" type="number" defaultValue={editItem?.min} className="w-full p-2 border rounded-lg outline-none focus:ring-2 focus:ring-blue-100" />
+                                        </div>
+                                    </div>
+                                    <div className="pt-4 flex gap-3">
+                                        <button type="button" onClick={()=>setIsModalOpen(false)} className="flex-1 py-3 bg-slate-100 text-slate-500 font-bold rounded-xl hover:bg-slate-200">Cancel</button>
+                                        <button type="submit" className="flex-1 py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 shadow-lg">Save Item</button>
+                                    </div>
+                                </form>
                             </div>
                         </div>
                     )}
