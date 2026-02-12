@@ -1074,7 +1074,7 @@
             );
         };
 
-/// --- Inventory View (Updated with Excel Import/Export, Validation & Fixed Search Error) ---
+// --- Inventory View (Updated with Excel Import/Export, Validation & Fixed Search Error) ---
         const InventoryView = ({ inventory, setInventory, addTransaction }) => {
             const [searchTerm, setSearchTerm] = useState("");
             const [editItem, setEditItem] = useState(null);
@@ -1268,25 +1268,34 @@
                                     {filteredInventory.length === 0 ? (
                                         <tr><td colSpan="7" className="p-8 text-center text-slate-400">ไม่พบรายการสินค้า</td></tr>
                                     ) : (
-                                        filteredInventory.map((item, i) => (
-                                            <tr key={i} className="hover:bg-slate-50 transition">
-                                                <td className="p-4 font-mono font-bold text-blue-600">{item.partNo}</td>
-                                                <td className="p-4 text-slate-600">{item.name}</td>
-                                                <td className={`p-4 text-right font-bold ${item.qty <= item.min ? 'text-red-500' : 'text-slate-700'}`}>
-                                                    {item.qty.toLocaleString()}
-                                                    {item.qty <= item.min && <i className="fa-solid fa-triangle-exclamation ml-2 text-xs" title="Low Stock"></i>}
-                                                </td>
-                                                <td className="p-4 text-center text-slate-400 text-xs">{item.unit}</td>
-                                                <td className="p-4 text-right text-slate-500">{item.cost.toLocaleString()}</td>
-                                                <td className="p-4 text-center"><span className="bg-slate-100 text-slate-500 px-2 py-1 rounded text-xs">{item.type}</span></td>
-                                                <td className="p-4 text-center">
-                                                    <div className="flex justify-center gap-2">
-                                                        <button onClick={()=>{setEditItem(item); setIsModalOpen(true);}} className="text-slate-400 hover:text-blue-600"><i className="fa-solid fa-pen-to-square"></i></button>
-                                                        <button onClick={()=>handleDelete(item.partNo)} className="text-slate-400 hover:text-red-600"><i className="fa-solid fa-trash"></i></button>
-                                                    </div>
-                                                </td>
-                                            </tr>
-                                        ))
+                                        filteredInventory.map((item, i) => {
+                                            // Safety checks for undefined/null values
+                                            const qty = Number(item.qty) || 0;
+                                            const min = Number(item.min || item.minStock) || 0;
+                                            const cost = Number(item.cost) || 0;
+                                            const unit = item.unit || "-";
+                                            const type = item.type || "-";
+
+                                            return (
+                                                <tr key={i} className="hover:bg-slate-50 transition">
+                                                    <td className="p-4 font-mono font-bold text-blue-600">{item.partNo}</td>
+                                                    <td className="p-4 text-slate-600">{item.name}</td>
+                                                    <td className={`p-4 text-right font-bold ${qty <= min ? 'text-red-500' : 'text-slate-700'}`}>
+                                                        {qty.toLocaleString()}
+                                                        {qty <= min && <i className="fa-solid fa-triangle-exclamation ml-2 text-xs" title="Low Stock"></i>}
+                                                    </td>
+                                                    <td className="p-4 text-center text-slate-400 text-xs">{unit}</td>
+                                                    <td className="p-4 text-right text-slate-500">{cost.toLocaleString()}</td>
+                                                    <td className="p-4 text-center"><span className="bg-slate-100 text-slate-500 px-2 py-1 rounded text-xs">{type}</span></td>
+                                                    <td className="p-4 text-center">
+                                                        <div className="flex justify-center gap-2">
+                                                            <button onClick={()=>{setEditItem(item); setIsModalOpen(true);}} className="text-slate-400 hover:text-blue-600"><i className="fa-solid fa-pen-to-square"></i></button>
+                                                            <button onClick={()=>handleDelete(item.partNo)} className="text-slate-400 hover:text-red-600"><i className="fa-solid fa-trash"></i></button>
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })
                                     )}
                                 </tbody>
                             </table>
@@ -1334,7 +1343,7 @@
                                         </div>
                                         <div className="col-span-1">
                                             <label className="block text-xs font-bold text-slate-500 mb-1">Safety Stock (Min)</label>
-                                            <input name="min" type="number" defaultValue={editItem?.min} className="w-full p-2 border rounded-lg outline-none focus:ring-2 focus:ring-blue-100" />
+                                            <input name="min" type="number" defaultValue={editItem?.min || editItem?.minStock} className="w-full p-2 border rounded-lg outline-none focus:ring-2 focus:ring-blue-100" />
                                         </div>
                                     </div>
                                     <div className="pt-4 flex gap-3">
