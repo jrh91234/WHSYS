@@ -1074,7 +1074,7 @@
             );
         };
 
-// --- Inventory View (Updated with Excel Import/Export & Validation) ---
+/// --- Inventory View (Updated with Excel Import/Export, Validation & Fixed Search Error) ---
         const InventoryView = ({ inventory, setInventory, addTransaction }) => {
             const [searchTerm, setSearchTerm] = useState("");
             const [editItem, setEditItem] = useState(null);
@@ -1136,7 +1136,7 @@
                             }
 
                             const partNo = String(row.PartNo).trim();
-                            const existingIndex = newInventory.findIndex(i => i.partNo === partNo);
+                            const existingIndex = newInventory.findIndex(i => String(i.partNo) === partNo);
 
                             // Format Data (Default values if missing)
                             const itemData = {
@@ -1180,7 +1180,7 @@
             // --- CRUD Handlers ---
             const handleDelete = (partNo) => {
                 if(confirm(`Delete ${partNo}?`)) {
-                    setInventory(inventory.filter(i => i.partNo !== partNo));
+                    setInventory(inventory.filter(i => String(i.partNo) !== String(partNo)));
                     addTransaction(`Deleted ${partNo}`);
                 }
             };
@@ -1189,7 +1189,7 @@
                 e.preventDefault();
                 const formData = new FormData(e.target);
                 const item = {
-                    partNo: formData.get('partNo'),
+                    partNo: String(formData.get('partNo')),
                     name: formData.get('name'),
                     qty: parseFloat(formData.get('qty')) || 0,
                     unit: formData.get('unit'),
@@ -1200,7 +1200,7 @@
                     lastUpdated: new Date().toISOString()
                 };
 
-                const existingIdx = inventory.findIndex(i => i.partNo === item.partNo);
+                const existingIdx = inventory.findIndex(i => String(i.partNo) === item.partNo);
                 if (editItem && existingIdx > -1) {
                     const newInv = [...inventory];
                     newInv[existingIdx] = item;
@@ -1214,9 +1214,10 @@
                 setIsModalOpen(false);
             };
 
+            // FIXED: Added String() wrapper to handle number inputs and prevent toLowerCase() error
             const filteredInventory = inventory.filter(i => 
-                i.partNo.toLowerCase().includes(searchTerm.toLowerCase()) || 
-                i.name.toLowerCase().includes(searchTerm.toLowerCase())
+                String(i.partNo || "").toLowerCase().includes(searchTerm.toLowerCase()) || 
+                String(i.name || "").toLowerCase().includes(searchTerm.toLowerCase())
             );
 
             return (
@@ -1347,7 +1348,6 @@
                 </div>
             );
         };
-
         const HistoryView = ({ transactions }) => (
             <div className="space-y-6">
                 <div className="flex justify-between items-center"><h2 className="text-2xl font-bold">History</h2><button onClick={()=>exportToExcel(transactions, "Log")} className="text-xs bg-emerald-100 text-emerald-700 px-3 py-1 rounded font-bold"><Icons.Download/> Export</button></div>
