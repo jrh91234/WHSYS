@@ -1145,19 +1145,29 @@ const handleImportExcel = (e) => {
             }
 
             // --- ส่วนที่เพิ่มเข้ามา: ส่งข้อมูลไปบันทึกใน Google Sheets ---
-            if (apiUrl) {
-                // แสดง Loading หรือแจ้งเตือนกำลังดำเนินการ
-                console.log("กำลังส่งข้อมูลไปบันทึก...");
-                
-                await fetch(apiUrl, {
-                    method: "POST",
-                    mode: "no-cors", // จำเป็นสำหรับ Google Apps Script
-                    body: JSON.stringify({ 
-                        action: "bulk_import", 
-                        items: itemsToImport 
-                    })
-                });
+                   if (apiUrl) {
+                try {
+                    console.log("กำลังส่งข้อมูลไปบันทึก...");
+                    
+                    // แนะนำให้ตัด mode: "no-cors" ออกเพื่อให้ fetch ทำงานตามปกติ 
+                    // หรือถ้าติดปัญหาเรื่อง CORS จริงๆ ให้ใช้การเช็คสถานะเบื้องต้น
+                    const response = await fetch(apiUrl, {
+                        method: "POST",
+                        body: JSON.stringify({ 
+                            action: "bulk_import", 
+                            items: itemsToImport 
+                        })
+                    });
+            
+                    // ถ้าไม่ได้ใช้ no-cors เราจะเช็ค response ได้
+                    // if (response.ok) { console.log("บันทึกสำเร็จ"); }
+            
+                } catch (err) {
+                    console.error("Network Error:", err);
+                    alert("การเชื่อมต่อล้มเหลว ข้อมูลอาจยังไม่ถูกบันทึกลง Google Sheets");
+                }
             }
+        }
 
             // อัปเดตข้อมูลหน้าจอ (UI)
             const newInventory = [...inventory];
