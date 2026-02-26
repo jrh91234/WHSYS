@@ -1144,12 +1144,9 @@
                                 partNo: partNo,
                                 name: row.Name || "Unknown",
                                 qty: parseFloat(row.Qty) || 0,
+                                location: "-", // เพิ่มเพื่อให้ครบถ้วนตาม Database
                                 unit: row.Unit || "pcs",
-                                cost: parseFloat(row.Cost) || 0,
-                                type: row.Type || "General",
-                                min: parseFloat(row.Min) || 0,
-                                max: parseFloat(row.Max) || 0,
-                                lastUpdated: new Date().toISOString()
+                                minStock: parseFloat(row.Min) || 0, // เปลี่ยนจาก min เป็น minStock
                             };
 
                             if (existingIndex > -1) {
