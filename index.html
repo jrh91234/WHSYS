@@ -1103,78 +1103,87 @@
                 XLSX.writeFile(wb, "Inventory_Template.xlsx");
             };
 
-            // --- 2. Import Excel Function with Validation ---
-            const handleImportExcel = (e) => {
-                const file = e.target.files[0];
-                if (!file) return;
+   // --- 2. Import Excel Function with Validation (Fixed) ---
+const handleImportExcel = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
 
-                const reader = new FileReader();
-                reader.onload = (evt) => {
-                    try {
-                        const bstr = evt.target.result;
-                        const wb = XLSX.read(bstr, { type: 'binary' });
-                        const wsname = wb.SheetNames[0];
-                        const ws = wb.Sheets[wsname];
-                        const data = XLSX.utils.sheet_to_json(ws);
+    const reader = new FileReader();
+    reader.onload = async (evt) => {
+        try {
+            const bstr = evt.target.result;
+            const wb = XLSX.read(bstr, { type: 'binary' });
+            const wsname = wb.SheetNames[0];
+            const ws = wb.Sheets[wsname];
+            const data = XLSX.utils.sheet_to_json(ws);
 
-                        if (data.length === 0) {
-                            alert("ไม่พบข้อมูลในไฟล์ Excel");
-                            return;
-                        }
+            if (data.length === 0) {
+                alert("ไม่พบข้อมูลในไฟล์ Excel");
+                return;
+            }
 
-                        // Validation & Processing
-                        let newCount = 0;
-                        let updateCount = 0;
-                        let errorCount = 0;
-                        
-                        const newInventory = [...inventory];
+            // ประมวลผลข้อมูลและเตรียมส่งไปยัง Server
+            const itemsToImport = data.map(row => {
+                // ดักจับชื่อ Column ทั้งตัวพิมพ์เล็กและใหญ่
+                const partNo = String(row.PartNo || row.partno || "").trim();
+                if (!partNo) return null;
 
-                        data.forEach((row, index) => {
-                            // Check Essential Field: PartNo
-                            if (!row.PartNo) {
-                                errorCount++;
-                                return; 
-                            }
-
-                            const partNo = String(row.PartNo).trim();
-                            const existingIndex = newInventory.findIndex(i => String(i.partNo) === partNo);
-
-                            // Format Data (Default values if missing)
-                            const itemData = {
-                                partNo: partNo,
-                                name: row.Name || "Unknown",
-                                qty: parseFloat(row.Qty) || 0,
-                                location: "-", // เพิ่มเพื่อให้ครบถ้วนตาม Database
-                                unit: row.Unit || "pcs",
-                                minStock: parseFloat(row.Min) || 0, // เปลี่ยนจาก min เป็น minStock
-                            };
-
-                            if (existingIndex > -1) {
-                                // Update existing
-                                newInventory[existingIndex] = { ...newInventory[existingIndex], ...itemData };
-                                updateCount++;
-                            } else {
-                                // Add new
-                                newInventory.push(itemData);
-                                newCount++;
-                            }
-                        });
-
-                        setInventory(newInventory);
-                        // Fixed: Correct addTransaction signature
-                        addTransaction('ADJUST', 'SYSTEM', 0, 'IMPORT', `Excel Import: New ${newCount}, Updated ${updateCount}`);
-                        alert(`นำเข้าสำเร็จ!\n- รายการใหม่: ${newCount}\n- อัปเดต: ${updateCount}\n- ข้าม (ข้อมูลไม่ครบ): ${errorCount}`);
-
-                    } catch (error) {
-                        console.error(error);
-                        alert("เกิดข้อผิดพลาดในการอ่านไฟล์: " + error.message);
-                    } finally {
-                        // Reset input to allow re-uploading same file
-                        e.target.value = ""; 
-                    }
+                return {
+                    partNo: partNo,
+                    name: String(row.Name || row.name || "Unknown"),
+                    qty: parseFloat(row.Qty || row.qty) || 0,
+                    location: "-",
+                    unit: String(row.Unit || row.unit || "pcs"),
+                    minStock: parseFloat(row.Min || row.min || 0),
+                    type: String(row.Type || row.type || "Raw Material")
                 };
-                reader.readAsBinaryString(file);
-            };
+            }).filter(item => item !== null);
+
+            if (itemsToImport.length === 0) {
+                alert("ไม่มีข้อมูลที่ถูกต้องในการนำเข้า");
+                return;
+            }
+
+            // --- ส่วนที่เพิ่มเข้ามา: ส่งข้อมูลไปบันทึกใน Google Sheets ---
+            if (apiUrl) {
+                // แสดง Loading หรือแจ้งเตือนกำลังดำเนินการ
+                console.log("กำลังส่งข้อมูลไปบันทึก...");
+                
+                await fetch(apiUrl, {
+                    method: "POST",
+                    mode: "no-cors", // จำเป็นสำหรับ Google Apps Script
+                    body: JSON.stringify({ 
+                        action: "bulk_import", 
+                        items: itemsToImport 
+                    })
+                });
+            }
+
+            // อัปเดตข้อมูลหน้าจอ (UI)
+            const newInventory = [...inventory];
+            itemsToImport.forEach(item => {
+                const idx = newInventory.findIndex(i => i.partNo === item.partNo);
+                if (idx > -1) {
+                    newInventory[idx] = { ...newInventory[idx], ...item };
+                } else {
+                    newInventory.push(item);
+                }
+            });
+            
+            setInventory(newInventory);
+            addTransaction('ADJUST', 'SYSTEM', 0, 'IMPORT', `Excel Bulk Import: ${itemsToImport.length} items`);
+            
+            alert(`นำเข้าและบันทึกข้อมูลสำเร็จ! (${itemsToImport.length} รายการ)`);
+
+        } catch (error) {
+            console.error(error);
+            alert("เกิดข้อผิดพลาด: " + error.message);
+        } finally {
+            e.target.value = ""; 
+        }
+    };
+    reader.readAsBinaryString(file);
+};
 
             // --- CRUD Handlers ---
             const handleDelete = (partNo) => {
