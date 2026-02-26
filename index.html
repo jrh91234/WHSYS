@@ -326,7 +326,8 @@
                         {/* Auto Sync Indicator for Mobile/Top was moved to header */}
                         
                         {currentView === 'dashboard' && <DashboardView inventory={inventory} transactions={transactions} toInventory={()=>setCurrentView('inventory')} />}
-                        {currentView === 'inventory' && <InventoryView inventory={inventory} addTransaction={addTransaction} deleteItem={handleDeleteItem} />}
+                        // โค้ดที่แก้ไขแล้ว (เพิ่ม setInventory={setInventory})
+                        {currentView === 'inventory' && <InventoryView inventory={inventory} setInventory={setInventory} addTransaction={addTransaction} deleteItem={handleDeleteItem} />}
                         {currentView === 'mrp' && <AdvancedMRPView inventory={inventory} addTransaction={addTransaction} bomData={bomData} setBomData={setBomData} apiUrl={apiUrl} />}
                         {currentView === 'history' && <HistoryView transactions={transactions} />}
                         {currentView === 'settings' && <SettingsView apiUrl={apiUrl} setApiUrl={setApiUrl} users={users} currentUser={currentUser} onSaveUser={handleSaveUser} onDeleteUser={handleDeleteUser} />}
@@ -1075,7 +1076,7 @@
         };
 
 // --- Inventory View (Updated with Excel Import/Export, Validation & Fixed Search Error) ---
-        const InventoryView = ({ inventory, setInventory, addTransaction }) => {
+        const InventoryView = ({ inventory, setInventory, addTransaction, deleteItem }) => {
             const [searchTerm, setSearchTerm] = useState("");
             const [editItem, setEditItem] = useState(null);
             const [isModalOpen, setIsModalOpen] = useState(false);
