@@ -52,7 +52,6 @@
         const STORAGE_KEY_BOM_DATA = "nlc_erp_bom_data";
         const STORAGE_KEY_BOM_VERSION = "nlc_erp_bom_version";
 
-        // URL ใหม่ของคุณที่ Update แล้ว
         const DEFAULT_API_URL = "https://script.google.com/macros/s/AKfycby923XbLtP0TxMmKNG1JyhmtZeMNNALNCCJLXWr1GI70NYH0h7AI27c7yP2-L3h9Ne_zQ/exec"; 
         
         const INITIAL_INVENTORY = [
@@ -174,18 +173,16 @@
 
             useEffect(() => {
                 if (currentUser) { setStorage(STORAGE_KEY_SESSION, currentUser); }
-                // Fetch data immediately when app loads, even if not logged in (to get latest users)
                 fetchAllData(true); 
                 if(!currentUser) { localStorage.removeItem(STORAGE_KEY_SESSION); }
             }, [currentUser]);
 
-            // --- AUTO SYNC LOGIC ---
             useEffect(() => {
                 if (!apiUrl) return;
                 
                 const checkAndSync = async () => {
                     try {
-                        const res = await fetch(apiUrl + "?action=checkVersion&t=" + Date.now()); // Add timestamp
+                        const res = await fetch(apiUrl + "?action=checkVersion&t=" + Date.now());
                         const data = await res.json();
                         if (data.lastUpdated && data.lastUpdated > bomVersion) {
                             console.log("Found new version, auto-syncing...");
@@ -206,15 +203,14 @@
                 else setIsSyncing(true);
 
                 try {
-                    const res = await fetch(apiUrl + "?action=getData&t=" + Date.now()); // Add timestamp
+                    const res = await fetch(apiUrl + "?action=getData&t=" + Date.now()); 
                     const data = await res.json();
                     
-                    // Update only if data is valid
                     if (data.inventory) setInventory(data.inventory);
                     if (data.transactions) setTransactions(data.transactions);
-                    if (data.users) setUsers(data.users); // Critical: Update users for login
+                    if (data.users) setUsers(data.users); 
 
-                    const resBOM = await fetch(apiUrl + "?action=getBOM&t=" + Date.now()); // Add timestamp
+                    const resBOM = await fetch(apiUrl + "?action=getBOM&t=" + Date.now());
                     const jsonBOM = await resBOM.json();
                     const sheetData = jsonBOM.data || jsonBOM;
                     const version = jsonBOM.version || Date.now();
@@ -238,11 +234,9 @@
             };
 
             const handleLogin = (u, p) => {
-                // แก้ไข: แปลง Username และ Password เป็น String ทั้งคู่ก่อนเปรียบเทียบ
                 const user = users.find(x => String(x.username).trim() === String(u).trim() && String(x.password).trim() === String(p).trim());
                 if (user) {
                     setCurrentUser(user);
-                    // Force refresh data after login
                     fetchAllData(); 
                 } else {
                     alert("Username หรือ Password ไม่ถูกต้อง\n(ลองตรวจสอบว่า Sheet 'Users' มีข้อมูลที่ถูกต้องหรือไม่)");
@@ -323,17 +317,13 @@
                     </div>
                     
                     <main className="flex-1 overflow-y-auto p-4 md:p-8 pt-20 md:pt-8 pb-24 md:pb-8 h-full">
-                        {/* Auto Sync Indicator for Mobile/Top was moved to header */}
-                        
                         {currentView === 'dashboard' && <DashboardView inventory={inventory} transactions={transactions} toInventory={()=>setCurrentView('inventory')} />}
-                        // โค้ดที่แก้ไขแล้ว (เพิ่ม setInventory={setInventory})
-                        {currentView === 'inventory' && <InventoryView inventory={inventory} setInventory={setInventory} addTransaction={addTransaction} deleteItem={handleDeleteItem} />}
+                        {currentView === 'inventory' && <InventoryView inventory={inventory} setInventory={setInventory} addTransaction={addTransaction} deleteItem={handleDeleteItem} apiUrl={apiUrl} currentUser={currentUser} setTransactions={setTransactions} />}
                         {currentView === 'mrp' && <AdvancedMRPView inventory={inventory} addTransaction={addTransaction} bomData={bomData} setBomData={setBomData} apiUrl={apiUrl} />}
                         {currentView === 'history' && <HistoryView transactions={transactions} />}
                         {currentView === 'settings' && <SettingsView apiUrl={apiUrl} setApiUrl={setApiUrl} users={users} currentUser={currentUser} onSaveUser={handleSaveUser} onDeleteUser={handleDeleteUser} />}
                     </main>
 
-                    {/* Mobile Bottom Navigation */}
                     <div className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 px-4 py-2 z-30 flex justify-between items-center shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)] pb-safe">
                         <MobileNavItem icon="Dashboard" label="ภาพรวม" active={currentView==='dashboard'} onClick={()=>setCurrentView('dashboard')} />
                         <MobileNavItem icon="Warehouse" label="คลัง" active={currentView==='inventory'} onClick={()=>setCurrentView('inventory')} />
@@ -359,7 +349,6 @@
             return (
                 <div className="min-h-screen flex items-center justify-center bg-slate-800 p-4">
                     <div className="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-sm text-center relative">
-                        {/* ปุ่มตั้งค่า URL กรณี Login ไม่ได้ */}
                         <button onClick={()=>setShowConfig(!showConfig)} className="absolute top-4 right-4 text-slate-300 hover:text-slate-500" title="Connection Settings"><Icons.Settings/></button>
                         
                         <div className="w-16 h-16 bg-blue-600 rounded-full flex items-center justify-center mx-auto mb-4 text-white text-2xl"><Icons.Warehouse/></div>
@@ -389,14 +378,12 @@
             );
         };
 
-   // --- MRP View (Updated: Breakdown shows Corrected Model Name) ---
         const AdvancedMRPView = ({ inventory, addTransaction, bomData, setBomData, apiUrl }) => {
             const [step, setStep] = useState(1);
-            const [mode, setMode] = useState('plan'); // 'plan', 'compare', 'search'
+            const [mode, setMode] = useState('plan'); 
             const [sheetNames, setSheetNames] = useState(Object.keys(bomData) || []);
             const [currentPreviewSheet, setCurrentPreviewSheet] = useState(sheetNames[0] || "");
             
-            // Column Selection
             const [pNoCol, setPNoCol] = useState(2);
             const [qtyCol, setQtyCol] = useState(4);
             const [lvlCol, setLvlCol] = useState(0);
@@ -409,13 +396,11 @@
             const [matchCandidates, setMatchCandidates] = useState([]);
             const [showConfirmModal, setShowConfirmModal] = useState(false);
             
-            // Result States
             const [finalSummary, setFinalSummary] = useState(null); 
             const [finalTree, setFinalTree] = useState(null);       
             const [resultViewMode, setResultViewMode] = useState('tree'); 
             const [breakdownItem, setBreakdownItem] = useState(null); 
             
-            // Search Part States
             const [searchPartQuery, setSearchPartQuery] = useState("");
             const [partSearchResults, setPartSearchResults] = useState(null);
 
@@ -424,16 +409,13 @@
             const [compareList, setCompareList] = useState(["", ""]);
             const [compResult, setCompResult] = useState(null);
 
-            // --- 1. DEFINED HELPER FUNCTION FIRST TO AVOID REFERENCE ERROR ---
-            // Improved Fuzzy Logic (Levenshtein Distance)
             const getSimilarity = (s1, s2) => {
                 s1 = String(s1 || "").toLowerCase().trim(); 
                 s2 = String(s2 || "").toLowerCase().trim();
                 
-                if (s1 === s2) return 1.0; // Exact match
-                if (s1.includes(s2) || s2.includes(s1)) return 0.9; // Substring match (high confidence)
+                if (s1 === s2) return 1.0; 
+                if (s1.includes(s2) || s2.includes(s1)) return 0.9; 
 
-                // Levenshtein Distance Calculation for Typos
                 const len1 = s1.length;
                 const len2 = s2.length;
                 const maxLen = Math.max(len1, len2);
@@ -448,9 +430,9 @@
                     for (let i = 1; i <= len1; i++) {
                         const indicator = s1[i - 1] === s2[j - 1] ? 0 : 1;
                         track[j][i] = Math.min(
-                            track[j][i - 1] + 1, // deletion
-                            track[j - 1][i] + 1, // insertion
-                            track[j - 1][i - 1] + indicator // substitution
+                            track[j][i - 1] + 1, 
+                            track[j - 1][i] + 1, 
+                            track[j - 1][i - 1] + indicator 
                         );
                     }
                 }
@@ -488,7 +470,6 @@
                 const candidates = parsedOrders.map(order => {
                     let bestMatch = ""; let maxScore = 0;
                     sheetNames.forEach(sheet => {
-                        // Safe call to getSimilarity
                         const score = getSimilarity(order.model, sheet);
                         if (score > maxScore) { maxScore = score; bestMatch = sheet; }
                     });
@@ -509,7 +490,7 @@
 
                     treeResults.push({
                         type: 'JOB_HEADER',
-                        partNo: order.matchedSheet, // Use Corrected Model Name here
+                        partNo: order.matchedSheet, 
                         name: `Production Job: ${order.qty} Unit(s)`,
                         reqQty: order.qty,
                         level: 0,
@@ -542,7 +523,6 @@
                         }
                         summaryResults[pNo].reqQty += totalReq;
                         
-                        // UPDATE: Use order.matchedSheet to show the Corrected/Selected Model
                         summaryResults[pNo].breakdown.push({ model: order.matchedSheet, qty: totalReq });
 
                         const stock = inventory.find(i => i.partNo === pNo);
@@ -557,7 +537,7 @@
                             qpu: qpu,
                             onHand: onHand,
                             diff: onHand - totalReq, 
-                            parentModel: order.matchedSheet // Use Corrected Model Name here too
+                            parentModel: order.matchedSheet 
                         });
                     });
                 });
@@ -602,7 +582,6 @@
                 setCompResult({ models: validModels, rows });
             };
 
-            // --- New Function: Search Part ---
             const handlePartSearch = () => {
                 if (!searchPartQuery.trim()) return alert("กรุณาพิมพ์คำค้นหา");
                 
@@ -613,7 +592,7 @@
                     const rows = bomData[sheet];
                     if (!rows) return;
                     
-                    rows.slice(1).forEach((row, idx) => { // Skip header
+                    rows.slice(1).forEach((row, idx) => { 
                         const pNo = String(row[pNoCol] || "").trim();
                         const name = String(row[nameCol] || "").trim();
                         
@@ -632,7 +611,6 @@
                 setPartSearchResults(results);
             };
 
-            // Sorting Helper
             const requestSort = (key) => {
                 let direction = 'ascending';
                 if (sortConfig.key === key && sortConfig.direction === 'ascending') {
@@ -857,7 +835,6 @@
                             </div>
 
                             {resultViewMode === 'summary' ? (
-                                // --- SUMMARY VIEW (Updated with Level & Clickable Breakdown) ---
                                 <div className="overflow-auto max-h-[60vh]">
                                     <table className="w-full text-xs text-left">
                                         <thead className="bg-slate-50 sticky top-0 cursor-pointer shadow-sm">
@@ -895,7 +872,6 @@
                                     </table>
                                 </div>
                             ) : (
-                                // --- TREE VIEW (Job Based / Parent-Child) ---
                                 <div className="overflow-auto max-h-[60vh]">
                                     <table className="w-full text-xs text-left">
                                         <thead className="bg-slate-50 sticky top-0 shadow-sm">
@@ -921,7 +897,6 @@
                                                         </tr>
                                                     );
                                                 }
-                                                // Calculate indentation
                                                 const indent = Math.max(0, (row.level - 1) * 20) + 10; 
 
                                                 return (
@@ -950,7 +925,6 @@
                         </div>
                     )}
 
-                    {/* --- Confirm Modal --- */}
                     {showConfirmModal && (
                         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 modal-overlay">
                             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6 animate-fade-in">
@@ -982,7 +956,6 @@
                         </div>
                     )}
 
-                    {/* --- Breakdown Modal (New) --- */}
                     {breakdownItem && (
                         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 modal-overlay" onClick={()=>setBreakdownItem(null)}>
                             <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden animate-fade-in" onClick={e=>e.stopPropagation()}>
@@ -1075,14 +1048,12 @@
             );
         };
 
-// --- Inventory View (Updated with Excel Import/Export, Validation & Fixed Search Error) ---
-        const InventoryView = ({ inventory, setInventory, addTransaction, deleteItem }) => {
+        const InventoryView = ({ inventory, setInventory, addTransaction, deleteItem, apiUrl, currentUser, setTransactions }) => {
             const [searchTerm, setSearchTerm] = useState("");
             const [editItem, setEditItem] = useState(null);
             const [isModalOpen, setIsModalOpen] = useState(false);
             const fileInputRef = useRef(null);
 
-            // --- 1. Download Template Function ---
             const handleDownloadTemplate = () => {
                 const templateData = [
                     { 
@@ -1103,93 +1074,100 @@
                 XLSX.writeFile(wb, "Inventory_Template.xlsx");
             };
 
-   // --- 2. Import Excel Function with Validation (Fixed) ---
-const handleImportExcel = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
+            const handleImportExcel = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = async (evt) => {
-        try {
-            const bstr = evt.target.result;
-            const wb = XLSX.read(bstr, { type: 'binary' });
-            const wsname = wb.SheetNames[0];
-            const ws = wb.Sheets[wsname];
-            const data = XLSX.utils.sheet_to_json(ws);
+                const reader = new FileReader();
+                reader.onload = async (evt) => {
+                    try {
+                        const bstr = evt.target.result;
+                        const wb = XLSX.read(bstr, { type: 'binary' });
+                        const wsname = wb.SheetNames[0];
+                        const ws = wb.Sheets[wsname];
+                        const data = XLSX.utils.sheet_to_json(ws);
 
-            if (data.length === 0) {
-                alert("ไม่พบข้อมูลในไฟล์ Excel");
-                return;
-            }
+                        if (data.length === 0) {
+                            alert("ไม่พบข้อมูลในไฟล์ Excel");
+                            return;
+                        }
 
-            // ประมวลผลข้อมูลและเตรียมส่งไปยัง Server
-            const itemsToImport = data.map(row => {
-                // ดักจับชื่อ Column ทั้งตัวพิมพ์เล็กและใหญ่
-                const partNo = String(row.PartNo || row.partno || "").trim();
-                if (!partNo) return null;
+                        const itemsToImport = data.map(row => {
+                            const partNo = String(row.PartNo || row.partno || row["Part No"] || "").trim();
+                            if (!partNo) return null;
 
-                return {
-                    partNo: partNo,
-                    name: String(row.Name || row.name || "Unknown"),
-                    qty: parseFloat(row.Qty || row.qty) || 0,
-                    location: "-",
-                    unit: String(row.Unit || row.unit || "pcs"),
-                    minStock: parseFloat(row.Min || row.min || 0),
-                    type: String(row.Type || row.type || "Raw Material")
+                            return {
+                                partNo: partNo,
+                                name: String(row.Name || row.name || "Unknown"),
+                                qty: parseFloat(row.Qty || row.qty) || 0,
+                                location: "-",
+                                unit: String(row.Unit || row.unit || "pcs"),
+                                minStock: parseFloat(row.Min || row.min || 0),
+                                type: String(row.Type || row.type || "Raw Material")
+                            };
+                        }).filter(item => item !== null);
+
+                        if (itemsToImport.length === 0) {
+                            alert("ไม่มีข้อมูลที่ถูกต้องในการนำเข้า");
+                            return;
+                        }
+
+                        // สร้างรายการประวัติ (Transaction) ไว้รอส่งพร้อมกัน
+                        const txObj = {
+                            id: Date.now().toString(), 
+                            date: new Date().toISOString(), 
+                            type: 'ADJUST', 
+                            partNo: 'SYSTEM', 
+                            qty: 0, 
+                            refDoc: 'IMPORT', 
+                            note: `Excel Bulk Import: ${itemsToImport.length} items`, 
+                            user: currentUser ? currentUser.name : "-"
+                        };
+
+                        if (apiUrl) {
+                            console.log("กำลังส่งข้อมูลไปบันทึก...");
+                            
+                            // ส่งข้อมูลและประวัติไปใน request เดียว
+                            await fetch(apiUrl, {
+                                method: "POST",
+                                mode: "no-cors", 
+                                body: JSON.stringify({ 
+                                    action: "bulk_import", 
+                                    items: itemsToImport,
+                                    transaction: txObj 
+                                })
+                            });
+                        }
+
+                        const newInventory = [...inventory];
+                        itemsToImport.forEach(item => {
+                            const idx = newInventory.findIndex(i => i.partNo === item.partNo);
+                            if (idx > -1) {
+                                newInventory[idx] = { ...newInventory[idx], ...item };
+                            } else {
+                                newInventory.push(item);
+                            }
+                        });
+                        
+                        // อัปเดตข้อมูลหน้าจอ
+                        setInventory(newInventory);
+                        setTransactions(prev => [txObj, ...prev]);
+                        
+                        alert(`นำเข้าและบันทึกข้อมูลสำเร็จ! (${itemsToImport.length} รายการ)`);
+
+                    } catch (error) {
+                        console.error(error);
+                        alert("เกิดข้อผิดพลาด: " + error.message);
+                    } finally {
+                        e.target.value = ""; 
+                    }
                 };
-            }).filter(item => item !== null);
+                reader.readAsBinaryString(file);
+            };
 
-            if (itemsToImport.length === 0) {
-                alert("ไม่มีข้อมูลที่ถูกต้องในการนำเข้า");
-                return;
-            }
-
-            // --- ส่วนที่เพิ่มเข้ามา: ส่งข้อมูลไปบันทึกใน Google Sheets ---
-            if (apiUrl) {
-                // แสดง Loading หรือแจ้งเตือนกำลังดำเนินการ
-                console.log("กำลังส่งข้อมูลไปบันทึก...");
-                
-                await fetch(apiUrl, {
-                    method: "POST",
-                    mode: "no-cors", // จำเป็นสำหรับ Google Apps Script
-                    body: JSON.stringify({ 
-                        action: "bulk_import", 
-                        items: itemsToImport 
-                    })
-                });
-            }
-
-            // อัปเดตข้อมูลหน้าจอ (UI)
-            const newInventory = [...inventory];
-            itemsToImport.forEach(item => {
-                const idx = newInventory.findIndex(i => i.partNo === item.partNo);
-                if (idx > -1) {
-                    newInventory[idx] = { ...newInventory[idx], ...item };
-                } else {
-                    newInventory.push(item);
-                }
-            });
-            
-            setInventory(newInventory);
-            addTransaction('ADJUST', 'SYSTEM', 0, 'IMPORT', `Excel Bulk Import: ${itemsToImport.length} items`);
-            
-            alert(`นำเข้าและบันทึกข้อมูลสำเร็จ! (${itemsToImport.length} รายการ)`);
-
-        } catch (error) {
-            console.error(error);
-            alert("เกิดข้อผิดพลาด: " + error.message);
-        } finally {
-            e.target.value = ""; 
-        }
-    };
-    reader.readAsBinaryString(file);
-};
-
-            // --- CRUD Handlers ---
             const handleDelete = (partNo) => {
                 if(confirm(`Delete ${partNo}?`)) {
                     setInventory(inventory.filter(i => String(i.partNo) !== String(partNo)));
-                    // Fixed: Correct addTransaction signature
                     addTransaction('ADJUST', partNo, 0, 'DELETE', 'Item Deleted');
                 }
             };
@@ -1214,18 +1192,15 @@ const handleImportExcel = (e) => {
                     const newInv = [...inventory];
                     newInv[existingIdx] = item;
                     setInventory(newInv);
-                    // Fixed: Correct addTransaction signature
                     addTransaction('ADJUST', item.partNo, item.qty, 'EDIT', 'Manual Edit');
                 } else {
                     if (existingIdx > -1) return alert("Part No already exists!");
                     setInventory([...inventory, item]);
-                    // Fixed: Correct addTransaction signature
                     addTransaction('INIT', item.partNo, item.qty, 'NEW', 'Added via Form', item);
                 }
                 setIsModalOpen(false);
             };
 
-            // FIXED: Added String() wrapper to handle number inputs and prevent toLowerCase() error
             const filteredInventory = inventory.filter(i => 
                 String(i.partNo || "").toLowerCase().includes(searchTerm.toLowerCase()) || 
                 String(i.name || "").toLowerCase().includes(searchTerm.toLowerCase())
@@ -1233,7 +1208,6 @@ const handleImportExcel = (e) => {
 
             return (
                 <div className="animate-fade-in space-y-6">
-                    {/* Toolbar */}
                     <div className="flex flex-col md:flex-row justify-between items-center gap-4 bg-white p-4 rounded-xl shadow-sm border">
                         <div className="flex gap-2 w-full md:w-auto">
                             <input 
@@ -1249,7 +1223,7 @@ const handleImportExcel = (e) => {
                                 <i className="fa-solid fa-file-arrow-down"></i> Template
                             </button>
                             
-                            <input type="file" ref={fileInputRef} onChange={handleImportExcel} className="hidden" accept=".xlsx, .xls" />
+                            <input type="file" ref={fileInputRef} onChange={handleImportExcel} className="hidden" accept=".xlsx, .xls, .csv" />
                             <button onClick={() => fileInputRef.current.click()} className="bg-green-600 text-white px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 hover:bg-green-700 whitespace-nowrap">
                                 <i className="fa-solid fa-file-excel"></i> Import
                             </button>
@@ -1260,7 +1234,6 @@ const handleImportExcel = (e) => {
                         </div>
                     </div>
 
-                    {/* Table */}
                     <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
                         <div className="overflow-x-auto">
                             <table className="w-full text-sm text-left">
@@ -1280,7 +1253,6 @@ const handleImportExcel = (e) => {
                                         <tr><td colSpan="7" className="p-8 text-center text-slate-400">ไม่พบรายการสินค้า</td></tr>
                                     ) : (
                                         filteredInventory.map((item, i) => {
-                                            // FIXED: Ensure numeric values fallback to 0 before calling toLocaleString()
                                             const qty = parseFloat(item.qty) || 0;
                                             const min = parseFloat(item.min ?? item.minStock) || 0;
                                             const cost = parseFloat(item.cost) || 0;
@@ -1313,7 +1285,6 @@ const handleImportExcel = (e) => {
                         </div>
                     </div>
 
-                    {/* Modal */}
                     {isModalOpen && (
                         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-fade-in">
                             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden">
