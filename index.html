@@ -203,7 +203,8 @@
                 else setIsSyncing(true);
 
                 try {
-                    const res = await fetch(apiUrl + "?action=getData&t=" + Date.now()); 
+                    // แก้ไข: เปลี่ยนจาก getData เป็น getInventory ให้ตรงกับ API ใน Backend
+                    const res = await fetch(apiUrl + "?action=getInventory&t=" + Date.now()); 
                     const data = await res.json();
                     
                     if (data.inventory) setInventory(data.inventory);
@@ -233,13 +234,36 @@
                 }
             };
 
-            const handleLogin = (u, p) => {
-                const user = users.find(x => String(x.username).trim() === String(u).trim() && String(x.password).trim() === String(p).trim());
-                if (user) {
-                    setCurrentUser(user);
+            const handleLogin = async (u, p) => {
+                const cleanU = String(u).trim();
+                const cleanP = String(p).trim();
+                
+                if (!cleanU || !cleanP) return alert("กรุณากรอกข้อมูลให้ครบถ้วน");
+
+                setIsLoading(true);
+                try {
+                    // 1. ส่งข้อมูลตรวจสอบล็อกอินไปยัง Cloud โดยตรง (เพื่อความปลอดภัยและได้ข้อมูล User จริง)
+                    const res = await fetch(`${apiUrl}?action=login&username=${encodeURIComponent(cleanU)}&password=${encodeURIComponent(cleanP)}`);
+                    const data = await res.json();
+                    
+                    if (data.status === "success") {
+                        setCurrentUser(data.user);
+                        fetchAllData(); 
+                        return; // ออกจากระบบฟังก์ชันเมื่อ Login สำเร็จ
+                    }
+                } catch (error) {
+                    console.warn("Cloud login failed, trying local fallback...", error);
+                } finally {
+                    setIsLoading(false);
+                }
+
+                // 2. แผนสำรอง: เช็คข้อมูลที่เซฟไว้ในเครื่อง (ใช้ได้ในกรณีออฟไลน์ หรือบัญชี Admin ตั้งต้น)
+                const localUser = users.find(x => String(x.username).trim() === cleanU && String(x.password).trim() === cleanP);
+                if (localUser) {
+                    setCurrentUser(localUser);
                     fetchAllData(); 
                 } else {
-                    alert("Username หรือ Password ไม่ถูกต้อง\n(ลองตรวจสอบว่า Sheet 'Users' มีข้อมูลที่ถูกต้องหรือไม่)");
+                    alert("Username หรือ Password ไม่ถูกต้อง\n(หรือระบบยังไม่ได้เชื่อมต่อกับ Cloud)");
                 }
             };
 
