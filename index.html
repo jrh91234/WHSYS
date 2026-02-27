@@ -242,28 +242,38 @@
 
                 setIsLoading(true);
                 try {
-                    // 1. ส่งข้อมูลตรวจสอบล็อกอินไปยัง Cloud โดยตรง (เพื่อความปลอดภัยและได้ข้อมูล User จริง)
+                    // 1. ส่งข้อมูลตรวจสอบล็อกอินไปยัง Cloud โดยตรง
                     const res = await fetch(`${apiUrl}?action=login&username=${encodeURIComponent(cleanU)}&password=${encodeURIComponent(cleanP)}`);
                     const data = await res.json();
                     
                     if (data.status === "success") {
                         setCurrentUser(data.user);
                         fetchAllData(); 
-                        return; // ออกจากระบบฟังก์ชันเมื่อ Login สำเร็จ
+                        return;
+                    } else {
+                        // เพิ่ม: ถ้า Cloud ปฏิเสธ ให้แสดงข้อความจาก Cloud ทันที จะได้รู้ว่าเกิดจากอะไร
+                        alert(`เข้าสู่ระบบไม่สำเร็จ: ${data.message || "Username หรือ Password ในระบบ Cloud ไม่ถูกต้อง"}`);
+                        setIsLoading(false);
+                        return; 
                     }
                 } catch (error) {
                     console.warn("Cloud login failed, trying local fallback...", error);
+                    // 2. แผนสำรอง: กรณีออฟไลน์ หรือ URL พังให้เช็คบัญชีในเครื่องที่แคชไว้
+                    // ตรวจสอบ property password ก่อนเทียบเพราะข้อมูลจาก getInventory จะลบรหัสผ่านทิ้งไปแล้ว
+                    const localUser = users.find(x => String(x.username).trim() === cleanU && x.password && String(x.password).trim() === cleanP);
+                    
+                    if (localUser) {
+                        setCurrentUser(localUser);
+                        fetchAllData(); 
+                    } else if (cleanU === 'admin' && cleanP === '1111') {
+                        // Fallback ฉุกเฉินกรณีพึ่งเปิดเว็บครั้งแรกและต่อ Cloud ไม่ได้
+                        setCurrentUser({ id: 1, username: 'admin', name: 'Administrator', role: 'ADMIN' });
+                        fetchAllData();
+                    } else {
+                        alert("ไม่สามารถเชื่อมต่อ Cloud ได้ และไม่มีข้อมูลบัญชีนี้ในเครื่อง\n(โปรดเช็ค URL API หรือการเชื่อมต่ออินเทอร์เน็ต)");
+                    }
                 } finally {
                     setIsLoading(false);
-                }
-
-                // 2. แผนสำรอง: เช็คข้อมูลที่เซฟไว้ในเครื่อง (ใช้ได้ในกรณีออฟไลน์ หรือบัญชี Admin ตั้งต้น)
-                const localUser = users.find(x => String(x.username).trim() === cleanU && String(x.password).trim() === cleanP);
-                if (localUser) {
-                    setCurrentUser(localUser);
-                    fetchAllData(); 
-                } else {
-                    alert("Username หรือ Password ไม่ถูกต้อง\n(หรือระบบยังไม่ได้เชื่อมต่อกับ Cloud)");
                 }
             };
 
@@ -522,8 +532,6 @@
                     });
 
                     const sheetRows = bomData[order.matchedSheet];
-                    const levels = sheetRows.slice(1).map(r => parseFloat(r[lvlCol])).filter(n => !isNaN(n));
-                    const minLevel = levels.length > 0 ? Math.min(...levels) : 0;
 
                     sheetRows.forEach((row, idx) => {
                         if (idx === 0) return; 
@@ -534,9 +542,8 @@
                         const name = row[nameCol] || "";
                         const type = row[typeCol] || "-";
 
-                        if (!pNo) return;
-
-                        if (!isNaN(lvl) && lvl === minLevel) { return; }
+                        // ข้ามบรรทัดที่ไม่มี Part No หรือ Part No ซ้ำกับชื่อ Model ตัวมันเอง (ป้องกันลูปคำนวณซ้ำ)
+                        if (!pNo || pNo === order.matchedSheet) return;
 
                         const totalReq = qpu * order.qty;
 
@@ -707,7 +714,7 @@
                                                 </tr>
                                             </thead>
                                             <tbody>
-                                                {bomData[currentPreviewSheet]?.slice(1, 15).map((row, ri) => (
+                                                {bomData[currentPreviewSheet]?.slice(1).map((row, ri) => (
                                                     <tr key={ri} className="border-b hover:bg-slate-50">
                                                         <td className="p-2 border-r text-center text-slate-300">{ri+1}</td>
                                                         {row.map((c, ci) => (
