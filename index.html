@@ -1238,7 +1238,7 @@
             );
 
             const handleExportExcel = () => {
-                const exportData = filteredInventory.map(item => ({
+                const exportData = filteredInventory.filter(item => item.qty !== 0).map(item => ({
                     PartNo: item.partNo || "",
                     Name: item.name || "",
                     Qty: item.qty || 0,
