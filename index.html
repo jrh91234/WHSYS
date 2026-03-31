@@ -1232,10 +1232,30 @@
                 setIsModalOpen(false);
             };
 
-            const filteredInventory = inventory.filter(i => 
-                String(i.partNo || "").toLowerCase().includes(searchTerm.toLowerCase()) || 
+            const filteredInventory = inventory.filter(i =>
+                String(i.partNo || "").toLowerCase().includes(searchTerm.toLowerCase()) ||
                 String(i.name || "").toLowerCase().includes(searchTerm.toLowerCase())
             );
+
+            const handleExportExcel = () => {
+                const exportData = filteredInventory.map(item => ({
+                    PartNo: item.partNo || "",
+                    Name: item.name || "",
+                    Qty: item.qty || 0,
+                    Unit: item.unit || "",
+                    Cost: item.cost || 0,
+                    Type: item.type || "",
+                    Min: item.min || 0,
+                    Max: item.max || 0,
+                    Location: item.location || "",
+                    LastUpdated: item.lastUpdated || ""
+                }));
+                if (exportData.length === 0) {
+                    alert("ไม่มีข้อมูลสำหรับ Export");
+                    return;
+                }
+                exportToExcel(exportData, "Inventory", "Inventory");
+            };
 
             return (
                 <div className="animate-fade-in space-y-6">
@@ -1257,6 +1277,10 @@
                             <input type="file" ref={fileInputRef} onChange={handleImportExcel} className="hidden" accept=".xlsx, .xls, .csv" />
                             <button onClick={() => fileInputRef.current.click()} className="bg-green-600 text-white px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 hover:bg-green-700 whitespace-nowrap">
                                 <i className="fa-solid fa-file-excel"></i> Import
+                            </button>
+
+                            <button onClick={handleExportExcel} className="bg-emerald-600 text-white px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 hover:bg-emerald-700 whitespace-nowrap">
+                                <i className="fa-solid fa-file-arrow-up"></i> Export
                             </button>
 
                             <button onClick={()=>{setEditItem(null); setIsModalOpen(true);}} className="bg-blue-600 text-white px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 hover:bg-blue-700 whitespace-nowrap">
