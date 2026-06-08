@@ -18,8 +18,9 @@ function requestDrivePermission() {
     testBlob,
     { fields: "id" }
   );
-  var exported = Drive.Files.export(file.id, "text/plain");
-  Logger.log("Export test: " + exported.getDataAsString().substring(0, 50));
+  var url = "https://www.googleapis.com/drive/v3/files/" + file.id + "/export?mimeType=text/plain";
+  var res = UrlFetchApp.fetch(url, { headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() } });
+  Logger.log("Export test: " + res.getContentText().substring(0, 100));
   DriveApp.getFileById(file.id).setTrashed(true);
   Logger.log("Authorization successful! Drive OCR is ready to use.");
 }
@@ -277,8 +278,9 @@ function doPost(e) {
         { fields: "id" }
       );
 
-      var exported = Drive.Files.export(file.id, "text/plain");
-      var text = exported.getDataAsString();
+      var exportUrl = "https://www.googleapis.com/drive/v3/files/" + file.id + "/export?mimeType=text/plain";
+      var exportRes = UrlFetchApp.fetch(exportUrl, { headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() } });
+      var text = exportRes.getContentText();
 
       DriveApp.getFileById(file.id).setTrashed(true);
 
