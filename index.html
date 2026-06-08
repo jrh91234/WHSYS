@@ -1647,6 +1647,14 @@
                 });
             };
 
+            const readFileAsBase64 = (file) => {
+                return new Promise((resolve) => {
+                    const reader = new FileReader();
+                    reader.onload = (ev) => resolve(ev.target.result.split(',')[1]);
+                    reader.readAsDataURL(file);
+                });
+            };
+
             const handleOcrUpload = async (e) => {
                 const file = e.target.files[0];
                 if (!file) return;
@@ -1661,7 +1669,17 @@
 
                 try {
                     setOcrProgress(20);
-                    const { base64, mimeType } = await resizeImage(file);
+                    const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+                    let base64, mimeType;
+
+                    if (isPdf) {
+                        base64 = await readFileAsBase64(file);
+                        mimeType = 'application/pdf';
+                    } else {
+                        const resized = await resizeImage(file);
+                        base64 = resized.base64;
+                        mimeType = resized.mimeType;
+                    }
 
                     setOcrProgress(40);
                     const res = await fetch(apiUrl, {
@@ -1824,8 +1842,8 @@
                                 <button onClick={() => handleAdd()} className="bg-indigo-600 text-white px-6 py-3 rounded-xl font-bold text-lg hover:bg-indigo-700 shadow-lg flex items-center gap-2 whitespace-nowrap">
                                     <Icons.Plus/> เพิ่ม
                                 </button>
-                                <input type="file" ref={ocrFileRef} onChange={handleOcrUpload} className="hidden" accept="image/*" />
-                                <button onClick={() => ocrFileRef.current.click()} className="bg-amber-500 text-white px-4 py-3 rounded-xl font-bold text-lg hover:bg-amber-600 shadow-lg flex items-center gap-2 whitespace-nowrap" title="OCR - อ่านจากรูปใบนับสต๊อก">
+                                <input type="file" ref={ocrFileRef} onChange={handleOcrUpload} className="hidden" accept="image/*,.pdf" />
+                                <button onClick={() => ocrFileRef.current.click()} className="bg-amber-500 text-white px-4 py-3 rounded-xl font-bold text-lg hover:bg-amber-600 shadow-lg flex items-center gap-2 whitespace-nowrap" title="OCR - อ่านจากรูป/PDF ใบนับสต๊อก">
                                     <i className="fa-solid fa-camera"></i>
                                 </button>
                             </div>
@@ -1954,7 +1972,7 @@
                             </p>
                             <div className="mt-6 flex justify-center">
                                 <button onClick={() => ocrFileRef.current.click()} className="bg-amber-500 text-white px-6 py-3 rounded-xl font-bold hover:bg-amber-600 shadow-lg flex items-center gap-2">
-                                    <i className="fa-solid fa-camera"></i> อัปโหลดรูปใบนับสต๊อก (OCR)
+                                    <i className="fa-solid fa-camera"></i> อัปโหลดรูป / PDF ใบนับสต๊อก (OCR)
                                 </button>
                             </div>
                         </div>
@@ -1984,7 +2002,7 @@
                                 <div className="p-6 border-b bg-amber-50 flex justify-between items-center">
                                     <div>
                                         <h3 className="text-lg font-bold flex items-center gap-2"><i className="fa-solid fa-camera text-amber-600"></i> OCR - อ่านใบนับสต๊อก <span className="text-[10px] bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full font-normal">Google Drive OCR</span></h3>
-                                        <p className="text-xs text-slate-500 mt-1">รูปจะถูกส่งไป Google Drive เพื่อแกะข้อความ แล้วจับคู่กับฐานข้อมูล Inventory/BOM</p>
+                                        <p className="text-xs text-slate-500 mt-1">รูปภาพ/PDF จะถูกส่งไป Google Drive เพื่อแกะข้อความ แล้วจับคู่กับฐานข้อมูล Inventory/BOM</p>
                                     </div>
                                     <button onClick={() => { setShowOcrModal(false); setOcrResults(null); }} className="text-slate-400 hover:text-slate-600"><Icons.X className="text-xl"/></button>
                                 </div>
@@ -2010,7 +2028,7 @@
                                                 <div className="text-center py-8">
                                                     <div className="text-slate-400 mb-4"><i className="fa-solid fa-circle-exclamation text-4xl"></i></div>
                                                     <div className="font-bold text-slate-600">ไม่สามารถจับคู่ Part No ได้</div>
-                                                    <p className="text-sm text-slate-400 mt-2">ลองถ่ายรูปให้ชัดขึ้น หรือเขียนรหัส Part No ให้ชัดเจน</p>
+                                                    <p className="text-sm text-slate-400 mt-2">ลองถ่ายรูปให้ชัดขึ้น, ใช้ไฟล์ PDF scan, หรือเขียนรหัส Part No ให้ชัดเจน</p>
                                                 </div>
                                             ) : (
                                                 <div className="border rounded-xl overflow-hidden">
