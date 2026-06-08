@@ -18,6 +18,8 @@ function requestDrivePermission() {
     testBlob,
     { fields: "id" }
   );
+  var exported = Drive.Files.export(file.id, "text/plain");
+  Logger.log("Export test: " + exported.getDataAsString().substring(0, 50));
   DriveApp.getFileById(file.id).setTrashed(true);
   Logger.log("Authorization successful! Drive OCR is ready to use.");
 }
@@ -275,8 +277,8 @@ function doPost(e) {
         { fields: "id" }
       );
 
-      var doc = DocumentApp.openById(file.id);
-      var text = doc.getBody().getText();
+      var exported = Drive.Files.export(file.id, "text/plain");
+      var text = exported.getDataAsString();
 
       DriveApp.getFileById(file.id).setTrashed(true);
 
