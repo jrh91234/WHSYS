@@ -243,6 +243,30 @@ function doPost(e) {
       return ContentService.createTextOutput(JSON.stringify({ status: "success", count: txRows.length })).setMimeType(ContentService.MimeType.JSON);
     }
 
+    // 3.7 OCR VIA GOOGLE DRIVE v3 (อัปโหลดรูป → Drive แปลงเป็น Google Doc อัตโนมัติ → ดึง text)
+    // ต้องเปิด Drive API v3 ใน Apps Script Editor: Services > Drive API
+    else if (body.action === "ocr_image") {
+      var imageData = body.imageData;
+      var mimeType = body.mimeType || "image/png";
+      var blob = Utilities.newBlob(Utilities.base64Decode(imageData), mimeType, "ocr_stockcount.png");
+
+      var file = Drive.Files.create(
+        { name: "OCR_StockCount_" + Date.now(), mimeType: "application/vnd.google-apps.document" },
+        blob,
+        { fields: "id" }
+      );
+
+      var doc = DocumentApp.openById(file.id);
+      var text = doc.getBody().getText();
+
+      DriveApp.getFileById(file.id).setTrashed(true);
+
+      return ContentService.createTextOutput(JSON.stringify({
+        status: "success",
+        text: text
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
     // 4. DELETE ITEM
     else if (body.action === "delete_item") {
        var data = invSheet.getDataRange().getValues();

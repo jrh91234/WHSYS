@@ -356,7 +356,7 @@
                         {currentView === 'dashboard' && <DashboardView inventory={inventory} transactions={transactions} toInventory={()=>setCurrentView('inventory')} />}
                         {currentView === 'inventory' && <InventoryView inventory={inventory} setInventory={setInventory} addTransaction={addTransaction} deleteItem={handleDeleteItem} apiUrl={apiUrl} currentUser={currentUser} setTransactions={setTransactions} />}
                         {currentView === 'mrp' && <AdvancedMRPView inventory={inventory} addTransaction={addTransaction} bomData={bomData} setBomData={setBomData} apiUrl={apiUrl} />}
-                        {currentView === 'stockcount' && <StockCountView inventory={inventory} setInventory={setInventory} addTransaction={addTransaction} currentUser={currentUser} apiUrl={apiUrl} />}
+                        {currentView === 'stockcount' && <StockCountView inventory={inventory} setInventory={setInventory} addTransaction={addTransaction} currentUser={currentUser} apiUrl={apiUrl} bomData={bomData} />}
                         {currentView === 'history' && <HistoryView transactions={transactions} />}
                         {currentView === 'settings' && <SettingsView apiUrl={apiUrl} setApiUrl={setApiUrl} users={users} currentUser={currentUser} onSaveUser={handleSaveUser} onDeleteUser={handleDeleteUser} />}
                     </main>
@@ -1398,7 +1398,7 @@
                 </div>
             );
         };
-        const StockCountView = ({ inventory, setInventory, addTransaction, currentUser, apiUrl }) => {
+        const StockCountView = ({ inventory, setInventory, addTransaction, currentUser, apiUrl, bomData }) => {
             const [countItems, setCountItems] = useState([]);
             const [inputPartNo, setInputPartNo] = useState("");
             const [inputQty, setInputQty] = useState(1);
@@ -1406,16 +1406,95 @@
             const [showSummary, setShowSummary] = useState(false);
             const [showConfirm, setShowConfirm] = useState(false);
             const [filterDiff, setFilterDiff] = useState('all');
+            const [suggestions, setSuggestions] = useState([]);
+            const [showSuggestions, setShowSuggestions] = useState(false);
+            const [selectedSugIdx, setSelectedSugIdx] = useState(-1);
+            const [ocrProcessing, setOcrProcessing] = useState(false);
+            const [ocrProgress, setOcrProgress] = useState(0);
+            const [ocrResults, setOcrResults] = useState(null);
+            const [showOcrModal, setShowOcrModal] = useState(false);
             const inputRef = useRef(null);
+            const ocrFileRef = useRef(null);
+            const suggestionsRef = useRef(null);
 
             useEffect(() => {
                 if (inputRef.current) inputRef.current.focus();
             }, []);
 
-            const handleAdd = () => {
-                const pNo = inputPartNo.trim().toUpperCase();
+            const allKnownParts = useMemo(() => {
+                const parts = new Map();
+                inventory.forEach(item => {
+                    const pNo = String(item.partNo || "").trim().toUpperCase();
+                    if (pNo) parts.set(pNo, { partNo: item.partNo, name: item.name || "", source: 'INV' });
+                });
+                if (bomData) {
+                    Object.keys(bomData).forEach(sheet => {
+                        const rows = bomData[sheet];
+                        if (!rows) return;
+                        rows.slice(1).forEach(row => {
+                            const pNo = String(row[2] || "").trim().toUpperCase();
+                            const name = String(row[3] || "").trim();
+                            if (pNo && !parts.has(pNo)) {
+                                parts.set(pNo, { partNo: row[2], name, source: 'BOM' });
+                            }
+                        });
+                    });
+                }
+                return Array.from(parts.values());
+            }, [inventory, bomData]);
+
+            const fuzzyMatch = (query, target) => {
+                query = String(query || "").toLowerCase();
+                target = String(target || "").toLowerCase();
+                if (!query) return 0;
+                if (target === query) return 1.0;
+                if (target.includes(query)) return 0.9;
+                if (query.length <= 2) return target.startsWith(query) ? 0.8 : 0;
+                let qi = 0;
+                for (let ti = 0; ti < target.length && qi < query.length; ti++) {
+                    if (target[ti] === query[qi]) qi++;
+                }
+                return qi === query.length ? 0.5 + (0.3 * query.length / target.length) : 0;
+            };
+
+            const handleInputChange = (val) => {
+                setInputPartNo(val);
+                setSelectedSugIdx(-1);
+                const q = val.trim().toUpperCase();
+                if (q.length < 1) { setSuggestions([]); setShowSuggestions(false); return; }
+
+                const scored = allKnownParts.map(p => {
+                    const pNoScore = fuzzyMatch(q, p.partNo);
+                    const nameScore = fuzzyMatch(q, p.name) * 0.7;
+                    return { ...p, score: Math.max(pNoScore, nameScore) };
+                }).filter(p => p.score > 0.3).sort((a, b) => b.score - a.score).slice(0, 8);
+
+                setSuggestions(scored);
+                setShowSuggestions(scored.length > 0);
+            };
+
+            const handleSelectSuggestion = (partNo) => {
+                setInputPartNo(partNo);
+                setShowSuggestions(false);
+                setSuggestions([]);
+                if (inputRef.current) inputRef.current.focus();
+            };
+
+            const handleInputKeyDown = (e) => {
+                if (showSuggestions && suggestions.length > 0) {
+                    if (e.key === 'ArrowDown') { e.preventDefault(); setSelectedSugIdx(prev => Math.min(prev + 1, suggestions.length - 1)); return; }
+                    if (e.key === 'ArrowUp') { e.preventDefault(); setSelectedSugIdx(prev => Math.max(prev - 1, -1)); return; }
+                    if (e.key === 'Tab' && selectedSugIdx >= 0) { e.preventDefault(); handleSelectSuggestion(suggestions[selectedSugIdx].partNo); return; }
+                    if (e.key === 'Enter' && selectedSugIdx >= 0) { e.preventDefault(); handleSelectSuggestion(suggestions[selectedSugIdx].partNo); return; }
+                    if (e.key === 'Escape') { setShowSuggestions(false); return; }
+                }
+                if (e.key === 'Enter') handleAdd();
+            };
+
+            const handleAdd = (partNoOverride, qtyOverride) => {
+                const pNo = (partNoOverride || inputPartNo).trim().toUpperCase();
                 if (!pNo) return;
-                const qty = parseFloat(inputQty) || 1;
+                const qty = parseFloat(qtyOverride || inputQty) || 1;
 
                 setCountItems(prev => {
                     const existing = prev.find(i => i.partNo === pNo);
@@ -1423,9 +1502,11 @@
                         return prev.map(i => i.partNo === pNo ? { ...i, counted: i.counted + qty } : i);
                     }
                     const invItem = inventory.find(i => String(i.partNo).toUpperCase() === pNo);
+                    const bomPart = allKnownParts.find(p => String(p.partNo).toUpperCase() === pNo);
+                    const name = invItem ? invItem.name : (bomPart ? bomPart.name : "(ไม่พบในระบบ)");
                     return [...prev, {
                         partNo: pNo,
-                        name: invItem ? invItem.name : "(ไม่พบในระบบ)",
+                        name: name,
                         systemQty: invItem ? (parseFloat(invItem.qty) || 0) : 0,
                         counted: qty,
                         inSystem: !!invItem
@@ -1434,6 +1515,7 @@
 
                 setInputPartNo("");
                 setInputQty(1);
+                setShowSuggestions(false);
                 if (inputRef.current) inputRef.current.focus();
             };
 
@@ -1498,6 +1580,167 @@
                 exportToExcel(data, `StockCount_${countName}`, "StockCount");
             };
 
+            // --- OCR ---
+            const ocrFuzzyMatchPart = (rawText) => {
+                const cleaned = rawText.replace(/[^a-zA-Z0-9\-_.\/\s]/g, '').trim().toUpperCase();
+                if (!cleaned) return null;
+
+                const tokens = cleaned.split(/\s+/);
+                let bestMatch = null;
+                let bestScore = 0;
+
+                for (const token of tokens) {
+                    if (token.length < 2 || /^\d+$/.test(token)) continue;
+                    for (const part of allKnownParts) {
+                        const pNo = String(part.partNo).toUpperCase();
+                        let score = 0;
+                        if (pNo === token) { score = 1.0; }
+                        else if (pNo.includes(token) || token.includes(pNo)) { score = 0.85; }
+                        else {
+                            const len1 = token.length, len2 = pNo.length, maxLen = Math.max(len1, len2);
+                            if (maxLen === 0) continue;
+                            const track = Array(len2 + 1).fill(null).map(() => Array(len1 + 1).fill(null));
+                            for (let i = 0; i <= len1; i++) track[0][i] = i;
+                            for (let j = 0; j <= len2; j++) track[j][0] = j;
+                            for (let j = 1; j <= len2; j++) {
+                                for (let i = 1; i <= len1; i++) {
+                                    const ind = token[i-1] === pNo[j-1] ? 0 : 1;
+                                    track[j][i] = Math.min(track[j][i-1]+1, track[j-1][i]+1, track[j-1][i-1]+ind);
+                                }
+                            }
+                            score = 1 - (track[len2][len1] / maxLen);
+                        }
+                        if (score > bestScore && score >= 0.55) { bestScore = score; bestMatch = { ...part, score, ocrRaw: token }; }
+                    }
+                }
+                return bestMatch;
+            };
+
+            const extractQtyFromLine = (line) => {
+                const nums = line.match(/\b(\d+[\.,]?\d*)\b/g);
+                if (!nums) return 1;
+                const candidates = nums.map(n => parseFloat(n.replace(',', '.'))).filter(n => n > 0 && n < 100000);
+                return candidates.length > 0 ? candidates[candidates.length - 1] : 1;
+            };
+
+            const resizeImage = (file, maxDim = 1600) => {
+                return new Promise((resolve) => {
+                    const reader = new FileReader();
+                    reader.onload = (ev) => {
+                        const img = new Image();
+                        img.onload = () => {
+                            let w = img.width, h = img.height;
+                            if (w > maxDim || h > maxDim) {
+                                const ratio = Math.min(maxDim / w, maxDim / h);
+                                w = Math.round(w * ratio);
+                                h = Math.round(h * ratio);
+                            }
+                            const canvas = document.createElement('canvas');
+                            canvas.width = w; canvas.height = h;
+                            canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+                            const dataUrl = canvas.toDataURL('image/png', 0.9);
+                            resolve({ base64: dataUrl.split(',')[1], mimeType: 'image/png' });
+                        };
+                        img.src = ev.target.result;
+                    };
+                    reader.readAsDataURL(file);
+                });
+            };
+
+            const handleOcrUpload = async (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                e.target.value = "";
+
+                if (!apiUrl) { alert("กรุณาตั้งค่า API URL ก่อนใช้ OCR"); return; }
+
+                setOcrProcessing(true);
+                setOcrProgress(0);
+                setOcrResults(null);
+                setShowOcrModal(true);
+
+                try {
+                    setOcrProgress(20);
+                    const { base64, mimeType } = await resizeImage(file);
+
+                    setOcrProgress(40);
+                    const res = await fetch(apiUrl, {
+                        method: "POST",
+                        headers: { "Content-Type": "text/plain;charset=utf-8" },
+                        body: JSON.stringify({ action: "ocr_image", imageData: base64, mimeType })
+                    });
+
+                    setOcrProgress(80);
+                    const json = await res.json();
+
+                    if (json.status !== "success" || !json.text) {
+                        throw new Error(json.message || "OCR ไม่สำเร็จ - ตรวจสอบว่าเปิด Drive API ใน Apps Script แล้ว");
+                    }
+
+                    setOcrProgress(90);
+                    const lines = json.text.split('\n').filter(l => l.trim().length > 2);
+                    const results = [];
+
+                    for (const line of lines) {
+                        const matched = ocrFuzzyMatchPart(line);
+                        if (matched) {
+                            const qty = extractQtyFromLine(line);
+                            const existing = results.find(r => r.partNo === matched.partNo);
+                            if (existing) { existing.qty += qty; }
+                            else {
+                                results.push({
+                                    partNo: matched.partNo,
+                                    name: matched.name,
+                                    qty: qty,
+                                    confidence: matched.score,
+                                    ocrRaw: matched.ocrRaw,
+                                    ocrLine: line.trim(),
+                                    selected: true
+                                });
+                            }
+                        }
+                    }
+
+                    setOcrProgress(100);
+                    setOcrResults({ rawText: json.text, items: results, totalLines: lines.length });
+                } catch (err) {
+                    alert("OCR Error: " + err.message);
+                    setShowOcrModal(false);
+                } finally {
+                    setOcrProcessing(false);
+                }
+            };
+
+            const handleOcrConfirm = () => {
+                if (!ocrResults) return;
+                const selected = ocrResults.items.filter(i => i.selected);
+                selected.forEach(item => { handleAdd(item.partNo, item.qty); });
+                setShowOcrModal(false);
+                setOcrResults(null);
+            };
+
+            const toggleOcrItem = (idx) => {
+                setOcrResults(prev => ({
+                    ...prev,
+                    items: prev.items.map((item, i) => i === idx ? { ...item, selected: !item.selected } : item)
+                }));
+            };
+
+            const editOcrQty = (idx, newQty) => {
+                setOcrResults(prev => ({
+                    ...prev,
+                    items: prev.items.map((item, i) => i === idx ? { ...item, qty: parseFloat(newQty) || 0 } : item)
+                }));
+            };
+
+            const editOcrPartNo = (idx, newPartNo) => {
+                const part = allKnownParts.find(p => String(p.partNo).toUpperCase() === newPartNo.toUpperCase());
+                setOcrResults(prev => ({
+                    ...prev,
+                    items: prev.items.map((item, i) => i === idx ? { ...item, partNo: newPartNo, name: part ? part.name : item.name } : item)
+                }));
+            };
+
             const summaryData = useMemo(() => {
                 return countItems.map(i => ({ ...i, diff: i.counted - i.systemQty }));
             }, [countItems]);
@@ -1522,7 +1765,7 @@
                     <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                         <div>
                             <h2 className="text-2xl font-bold flex items-center gap-2"><Icons.Clipboard className="text-indigo-600"/> นับสต๊อก</h2>
-                            <p className="text-sm text-slate-400 mt-1">สแกนหรือคีย์ Part No ได้เรื่อยๆ ระบบจะสะสมจำนวนให้อัตโนมัติ</p>
+                            <p className="text-sm text-slate-400 mt-1">สแกน/พิมพ์ Part No หรืออัปโหลดรูปใบนับสต๊อก (OCR)</p>
                         </div>
                         <div className="flex items-center gap-2">
                             <input value={countName} onChange={e => setCountName(e.target.value)} className="p-2 border rounded-lg text-sm w-40 outline-none focus:ring-2 focus:ring-indigo-100" placeholder="ชื่อรอบนับ" />
@@ -1531,18 +1774,40 @@
 
                     <div className="bg-white p-6 rounded-2xl shadow-sm border">
                         <div className="flex flex-col sm:flex-row gap-3">
-                            <div className="flex-1">
-                                <label className="block text-xs font-bold text-slate-500 mb-1">Part No (สแกน/พิมพ์)</label>
+                            <div className="flex-1 relative">
+                                <label className="block text-xs font-bold text-slate-500 mb-1">Part No (สแกน/พิมพ์) <span className="text-indigo-400 font-normal">- พิมพ์เพื่อค้นหาอัตโนมัติ</span></label>
                                 <input
                                     ref={inputRef}
                                     type="text"
                                     value={inputPartNo}
-                                    onChange={e => setInputPartNo(e.target.value)}
-                                    onKeyDown={e => { if (e.key === 'Enter') handleAdd(); }}
+                                    onChange={e => handleInputChange(e.target.value)}
+                                    onKeyDown={handleInputKeyDown}
+                                    onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
+                                    onFocus={() => { if (suggestions.length > 0) setShowSuggestions(true); }}
                                     className="w-full p-3 border-2 border-indigo-200 rounded-xl text-lg font-mono outline-none focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500"
-                                    placeholder="สแกนบาร์โค้ด หรือพิมพ์รหัส..."
+                                    placeholder="สแกนบาร์โค้ด หรือพิมพ์รหัส/ชื่อ..."
                                     autoComplete="off"
                                 />
+                                {showSuggestions && suggestions.length > 0 && (
+                                    <div ref={suggestionsRef} className="absolute z-40 left-0 right-0 top-full mt-1 bg-white border-2 border-indigo-200 rounded-xl shadow-2xl overflow-hidden max-h-64 overflow-y-auto">
+                                        {suggestions.map((s, i) => (
+                                            <button
+                                                key={s.partNo}
+                                                onMouseDown={(e) => { e.preventDefault(); handleSelectSuggestion(s.partNo); }}
+                                                className={`w-full text-left px-4 py-3 flex items-center gap-3 border-b last:border-b-0 transition ${i === selectedSugIdx ? 'bg-indigo-50' : 'hover:bg-slate-50'}`}
+                                            >
+                                                <div className="flex-1 min-w-0">
+                                                    <div className="font-mono font-bold text-blue-700 text-sm">{s.partNo}</div>
+                                                    <div className="text-xs text-slate-400 truncate">{s.name}</div>
+                                                </div>
+                                                <span className={`text-[10px] px-2 py-0.5 rounded font-bold ${s.source === 'INV' ? 'bg-green-100 text-green-600' : 'bg-purple-100 text-purple-600'}`}>
+                                                    {s.source === 'INV' ? 'คลัง' : 'BOM'}
+                                                </span>
+                                                <span className="text-[10px] text-slate-300">{Math.round(s.score * 100)}%</span>
+                                            </button>
+                                        ))}
+                                    </div>
+                                )}
                             </div>
                             <div className="w-24">
                                 <label className="block text-xs font-bold text-slate-500 mb-1">จำนวน</label>
@@ -1555,9 +1820,13 @@
                                     min="1"
                                 />
                             </div>
-                            <div className="flex items-end">
-                                <button onClick={handleAdd} className="bg-indigo-600 text-white px-6 py-3 rounded-xl font-bold text-lg hover:bg-indigo-700 shadow-lg flex items-center gap-2 whitespace-nowrap">
+                            <div className="flex items-end gap-2">
+                                <button onClick={() => handleAdd()} className="bg-indigo-600 text-white px-6 py-3 rounded-xl font-bold text-lg hover:bg-indigo-700 shadow-lg flex items-center gap-2 whitespace-nowrap">
                                     <Icons.Plus/> เพิ่ม
+                                </button>
+                                <input type="file" ref={ocrFileRef} onChange={handleOcrUpload} className="hidden" accept="image/*" />
+                                <button onClick={() => ocrFileRef.current.click()} className="bg-amber-500 text-white px-4 py-3 rounded-xl font-bold text-lg hover:bg-amber-600 shadow-lg flex items-center gap-2 whitespace-nowrap" title="OCR - อ่านจากรูปใบนับสต๊อก">
+                                    <i className="fa-solid fa-camera"></i>
                                 </button>
                             </div>
                         </div>
@@ -1679,7 +1948,15 @@
                         <div className="bg-white rounded-2xl shadow-sm border p-12 text-center">
                             <div className="w-20 h-20 bg-indigo-100 rounded-full flex items-center justify-center mx-auto mb-4 text-indigo-400 text-3xl"><Icons.Clipboard/></div>
                             <h3 className="text-lg font-bold text-slate-700 mb-2">เริ่มนับสต๊อก</h3>
-                            <p className="text-sm text-slate-400 max-w-md mx-auto">สแกนบาร์โค้ดหรือพิมพ์ Part No แล้วกด Enter<br/>ระบบจะรวมจำนวนให้อัตโนมัติหากรหัสซ้ำ</p>
+                            <p className="text-sm text-slate-400 max-w-md mx-auto">
+                                สแกนบาร์โค้ดหรือพิมพ์ Part No แล้วกด Enter<br/>
+                                ระบบจะรวมจำนวนให้อัตโนมัติหากรหัสซ้ำ
+                            </p>
+                            <div className="mt-6 flex justify-center">
+                                <button onClick={() => ocrFileRef.current.click()} className="bg-amber-500 text-white px-6 py-3 rounded-xl font-bold hover:bg-amber-600 shadow-lg flex items-center gap-2">
+                                    <i className="fa-solid fa-camera"></i> อัปโหลดรูปใบนับสต๊อก (OCR)
+                                </button>
+                            </div>
                         </div>
                     )}
 
@@ -1697,6 +1974,100 @@
                                     <button onClick={() => setShowConfirm(false)} className="flex-1 py-3 bg-slate-100 text-slate-500 font-bold rounded-xl">ยกเลิก</button>
                                     <button onClick={handleApplyAdjust} className="flex-1 py-3 bg-indigo-600 text-white font-bold rounded-xl shadow-lg hover:bg-indigo-700">ยืนยัน Adjust</button>
                                 </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {showOcrModal && (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 modal-overlay">
+                            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden animate-fade-in flex flex-col">
+                                <div className="p-6 border-b bg-amber-50 flex justify-between items-center">
+                                    <div>
+                                        <h3 className="text-lg font-bold flex items-center gap-2"><i className="fa-solid fa-camera text-amber-600"></i> OCR - อ่านใบนับสต๊อก <span className="text-[10px] bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full font-normal">Google Drive OCR</span></h3>
+                                        <p className="text-xs text-slate-500 mt-1">รูปจะถูกส่งไป Google Drive เพื่อแกะข้อความ แล้วจับคู่กับฐานข้อมูล Inventory/BOM</p>
+                                    </div>
+                                    <button onClick={() => { setShowOcrModal(false); setOcrResults(null); }} className="text-slate-400 hover:text-slate-600"><Icons.X className="text-xl"/></button>
+                                </div>
+
+                                <div className="flex-1 overflow-y-auto p-6">
+                                    {ocrProcessing ? (
+                                        <div className="text-center py-12">
+                                            <div className="loader mx-auto mb-4" style={{width:40,height:40,borderWidth:4}}></div>
+                                            <div className="text-lg font-bold text-slate-700 mb-2">กำลังส่งรูปไป Google Drive OCR...</div>
+                                            <div className="w-64 mx-auto bg-slate-200 rounded-full h-3 overflow-hidden">
+                                                <div className="bg-amber-500 h-full rounded-full transition-all" style={{width: `${ocrProgress}%`}}></div>
+                                            </div>
+                                            <div className="text-sm text-slate-400 mt-2">{ocrProgress}%</div>
+                                        </div>
+                                    ) : ocrResults ? (
+                                        <div className="space-y-4">
+                                            <div className="flex gap-4 text-sm">
+                                                <span className="bg-amber-100 text-amber-700 px-3 py-1 rounded-full font-bold">อ่านได้ {ocrResults.totalLines} บรรทัด</span>
+                                                <span className="bg-green-100 text-green-700 px-3 py-1 rounded-full font-bold">จับคู่ได้ {ocrResults.items.length} รายการ</span>
+                                            </div>
+
+                                            {ocrResults.items.length === 0 ? (
+                                                <div className="text-center py-8">
+                                                    <div className="text-slate-400 mb-4"><i className="fa-solid fa-circle-exclamation text-4xl"></i></div>
+                                                    <div className="font-bold text-slate-600">ไม่สามารถจับคู่ Part No ได้</div>
+                                                    <p className="text-sm text-slate-400 mt-2">ลองถ่ายรูปให้ชัดขึ้น หรือเขียนรหัส Part No ให้ชัดเจน</p>
+                                                </div>
+                                            ) : (
+                                                <div className="border rounded-xl overflow-hidden">
+                                                    <table className="w-full text-sm text-left">
+                                                        <thead className="bg-slate-50 text-slate-500 font-bold border-b">
+                                                            <tr>
+                                                                <th className="p-3 w-10"><input type="checkbox" checked={ocrResults.items.every(i => i.selected)} onChange={() => setOcrResults(prev => ({ ...prev, items: prev.items.map(i => ({ ...i, selected: !prev.items.every(x => x.selected) })) }))} /></th>
+                                                                <th className="p-3">Part No (เดา)</th>
+                                                                <th className="p-3">OCR อ่านได้</th>
+                                                                <th className="p-3 text-right">จำนวน</th>
+                                                                <th className="p-3 text-center">ความมั่นใจ</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody className="divide-y">
+                                                            {ocrResults.items.map((item, idx) => (
+                                                                <tr key={idx} className={`hover:bg-slate-50 ${!item.selected ? 'opacity-40' : ''}`}>
+                                                                    <td className="p-3"><input type="checkbox" checked={item.selected} onChange={() => toggleOcrItem(idx)} /></td>
+                                                                    <td className="p-3">
+                                                                        <input type="text" value={item.partNo} onChange={e => editOcrPartNo(idx, e.target.value)} className="font-mono font-bold text-blue-700 bg-blue-50 border border-blue-200 rounded px-2 py-1 w-full outline-none focus:ring-2 focus:ring-blue-200" />
+                                                                        <div className="text-[10px] text-slate-400 mt-0.5 truncate">{item.name}</div>
+                                                                    </td>
+                                                                    <td className="p-3">
+                                                                        <div className="text-xs text-slate-500 font-mono bg-slate-100 px-2 py-1 rounded truncate" title={item.ocrLine}>{item.ocrLine}</div>
+                                                                    </td>
+                                                                    <td className="p-3 text-right">
+                                                                        <input type="number" value={item.qty} onChange={e => editOcrQty(idx, e.target.value)} className="w-16 text-right p-1 border rounded font-bold outline-none focus:ring-2 focus:ring-indigo-100" />
+                                                                    </td>
+                                                                    <td className="p-3 text-center">
+                                                                        <span className={`text-[10px] px-2 py-0.5 rounded font-bold ${
+                                                                            item.confidence >= 0.9 ? 'bg-green-100 text-green-700' :
+                                                                            item.confidence >= 0.7 ? 'bg-yellow-100 text-yellow-700' :
+                                                                            'bg-red-100 text-red-700'
+                                                                        }`}>{Math.round(item.confidence * 100)}%</span>
+                                                                    </td>
+                                                                </tr>
+                                                            ))}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            )}
+
+                                            <details className="text-xs">
+                                                <summary className="cursor-pointer text-slate-400 hover:text-slate-600 font-bold">ดู Raw OCR Text</summary>
+                                                <pre className="mt-2 bg-slate-900 text-green-400 p-4 rounded-xl overflow-auto max-h-40 whitespace-pre-wrap font-mono">{ocrResults.rawText}</pre>
+                                            </details>
+                                        </div>
+                                    ) : null}
+                                </div>
+
+                                {ocrResults && ocrResults.items.length > 0 && (
+                                    <div className="p-4 border-t bg-slate-50 flex gap-3">
+                                        <button onClick={() => { setShowOcrModal(false); setOcrResults(null); }} className="flex-1 py-3 bg-slate-100 text-slate-500 font-bold rounded-xl">ยกเลิก</button>
+                                        <button onClick={handleOcrConfirm} className="flex-1 py-3 bg-amber-500 text-white font-bold rounded-xl shadow-lg hover:bg-amber-600 flex items-center justify-center gap-2">
+                                            <Icons.Check/> เพิ่ม {ocrResults.items.filter(i => i.selected).length} รายการ
+                                        </button>
+                                    </div>
+                                )}
                             </div>
                         </div>
                     )}
