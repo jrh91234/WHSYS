@@ -99,7 +99,8 @@
             User: (p) => <i className={`fa-solid fa-user ${p.className}`}></i>,
             Users: (p) => <i className={`fa-solid fa-users ${p.className}`}></i>,
             Check: (p) => <i className={`fa-solid fa-check ${p.className}`}></i>,
-            Sort: (p) => <i className={`fa-solid fa-sort ${p.className}`}></i>
+            Sort: (p) => <i className={`fa-solid fa-sort ${p.className}`}></i>,
+            Clipboard: (p) => <i className={`fa-solid fa-clipboard-check ${p.className}`}></i>
         };
 
         const ResizableTh = ({ width, onResize, children, className, onClick }) => {
@@ -330,6 +331,7 @@
                             <SidebarItem icon="Dashboard" label="ภาพรวม" active={currentView==='dashboard'} onClick={()=>setCurrentView('dashboard')} />
                             <SidebarItem icon="Warehouse" label="คลังสินค้า" active={currentView==='inventory'} onClick={()=>setCurrentView('inventory')} />
                             <SidebarItem icon="Production" label="แผนผลิต (MRP)" active={currentView==='mrp'} onClick={()=>setCurrentView('mrp')} />
+                            <SidebarItem icon="Clipboard" label="นับสต๊อก" active={currentView==='stockcount'} onClick={()=>setCurrentView('stockcount')} />
                             <SidebarItem icon="History" label="ประวัติรายการ" active={currentView==='history'} onClick={()=>setCurrentView('history')} />
                             <SidebarItem icon="Settings" label="ตั้งค่า" active={currentView==='settings'} onClick={()=>setCurrentView('settings')} />
                         </nav>
@@ -354,6 +356,7 @@
                         {currentView === 'dashboard' && <DashboardView inventory={inventory} transactions={transactions} toInventory={()=>setCurrentView('inventory')} />}
                         {currentView === 'inventory' && <InventoryView inventory={inventory} setInventory={setInventory} addTransaction={addTransaction} deleteItem={handleDeleteItem} apiUrl={apiUrl} currentUser={currentUser} setTransactions={setTransactions} />}
                         {currentView === 'mrp' && <AdvancedMRPView inventory={inventory} addTransaction={addTransaction} bomData={bomData} setBomData={setBomData} apiUrl={apiUrl} />}
+                        {currentView === 'stockcount' && <StockCountView inventory={inventory} setInventory={setInventory} addTransaction={addTransaction} currentUser={currentUser} apiUrl={apiUrl} />}
                         {currentView === 'history' && <HistoryView transactions={transactions} />}
                         {currentView === 'settings' && <SettingsView apiUrl={apiUrl} setApiUrl={setApiUrl} users={users} currentUser={currentUser} onSaveUser={handleSaveUser} onDeleteUser={handleDeleteUser} />}
                     </main>
@@ -362,6 +365,7 @@
                         <MobileNavItem icon="Dashboard" label="ภาพรวม" active={currentView==='dashboard'} onClick={()=>setCurrentView('dashboard')} />
                         <MobileNavItem icon="Warehouse" label="คลัง" active={currentView==='inventory'} onClick={()=>setCurrentView('inventory')} />
                         <MobileNavItem icon="Production" label="ผลิต" active={currentView==='mrp'} onClick={()=>setCurrentView('mrp')} />
+                        <MobileNavItem icon="Clipboard" label="นับสต๊อก" active={currentView==='stockcount'} onClick={()=>setCurrentView('stockcount')} />
                         <MobileNavItem icon="History" label="ประวัติ" active={currentView==='history'} onClick={()=>setCurrentView('history')} />
                         <MobileNavItem icon="Settings" label="ตั้งค่า" active={currentView==='settings'} onClick={()=>setCurrentView('settings')} />
                     </div>
@@ -1394,6 +1398,292 @@
                 </div>
             );
         };
+        const StockCountView = ({ inventory, setInventory, addTransaction, currentUser, apiUrl }) => {
+            const [countItems, setCountItems] = useState([]);
+            const [inputPartNo, setInputPartNo] = useState("");
+            const [inputQty, setInputQty] = useState(1);
+            const [countName, setCountName] = useState(() => `SC-${new Date().toISOString().slice(0,10)}`);
+            const [showSummary, setShowSummary] = useState(false);
+            const [showConfirm, setShowConfirm] = useState(false);
+            const [filterDiff, setFilterDiff] = useState('all');
+            const inputRef = useRef(null);
+
+            useEffect(() => {
+                if (inputRef.current) inputRef.current.focus();
+            }, []);
+
+            const handleAdd = () => {
+                const pNo = inputPartNo.trim().toUpperCase();
+                if (!pNo) return;
+                const qty = parseFloat(inputQty) || 1;
+
+                setCountItems(prev => {
+                    const existing = prev.find(i => i.partNo === pNo);
+                    if (existing) {
+                        return prev.map(i => i.partNo === pNo ? { ...i, counted: i.counted + qty } : i);
+                    }
+                    const invItem = inventory.find(i => String(i.partNo).toUpperCase() === pNo);
+                    return [...prev, {
+                        partNo: pNo,
+                        name: invItem ? invItem.name : "(ไม่พบในระบบ)",
+                        systemQty: invItem ? (parseFloat(invItem.qty) || 0) : 0,
+                        counted: qty,
+                        inSystem: !!invItem
+                    }];
+                });
+
+                setInputPartNo("");
+                setInputQty(1);
+                if (inputRef.current) inputRef.current.focus();
+            };
+
+            const handleRemoveItem = (partNo) => {
+                setCountItems(prev => prev.filter(i => i.partNo !== partNo));
+            };
+
+            const handleEditCounted = (partNo, newQty) => {
+                setCountItems(prev => prev.map(i => i.partNo === partNo ? { ...i, counted: parseFloat(newQty) || 0 } : i));
+            };
+
+            const handleClearAll = () => {
+                if (countItems.length === 0) return;
+                if (!confirm("ล้างรายการนับทั้งหมด?")) return;
+                setCountItems([]);
+                setShowSummary(false);
+            };
+
+            const handleApplyAdjust = () => {
+                const itemsToAdjust = countItems.filter(i => i.counted !== i.systemQty);
+                if (itemsToAdjust.length === 0) { alert("ไม่มีรายการที่ต้อง Adjust"); return; }
+
+                itemsToAdjust.forEach(item => {
+                    addTransaction('ADJUST', item.partNo, item.counted, countName, `Stock Count: ${item.systemQty} -> ${item.counted}`, !item.inSystem ? { partNo: item.partNo, name: item.name, qty: item.counted, location: '-', unit: 'PCS', minStock: 0 } : null);
+                });
+
+                alert(`ปรับสต๊อกเรียบร้อย ${itemsToAdjust.length} รายการ`);
+                setShowConfirm(false);
+                setCountItems([]);
+                setShowSummary(false);
+            };
+
+            const handleExport = () => {
+                const data = countItems.map(i => ({
+                    PartNo: i.partNo,
+                    Name: i.name,
+                    SystemQty: i.systemQty,
+                    Counted: i.counted,
+                    Diff: i.counted - i.systemQty,
+                    Status: i.counted === i.systemQty ? 'OK' : i.counted > i.systemQty ? 'Over' : 'Short'
+                }));
+                exportToExcel(data, `StockCount_${countName}`, "StockCount");
+            };
+
+            const summaryData = useMemo(() => {
+                return countItems.map(i => ({ ...i, diff: i.counted - i.systemQty }));
+            }, [countItems]);
+
+            const filteredSummary = useMemo(() => {
+                if (filterDiff === 'all') return summaryData;
+                if (filterDiff === 'diff') return summaryData.filter(i => i.diff !== 0);
+                if (filterDiff === 'ok') return summaryData.filter(i => i.diff === 0);
+                return summaryData;
+            }, [summaryData, filterDiff]);
+
+            const stats = useMemo(() => {
+                const total = countItems.length;
+                const matched = countItems.filter(i => i.counted === i.systemQty).length;
+                const over = countItems.filter(i => i.counted > i.systemQty).length;
+                const short = countItems.filter(i => i.counted < i.systemQty).length;
+                return { total, matched, over, short };
+            }, [countItems]);
+
+            return (
+                <div className="animate-fade-in space-y-6">
+                    <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                        <div>
+                            <h2 className="text-2xl font-bold flex items-center gap-2"><Icons.Clipboard className="text-indigo-600"/> นับสต๊อก</h2>
+                            <p className="text-sm text-slate-400 mt-1">สแกนหรือคีย์ Part No ได้เรื่อยๆ ระบบจะสะสมจำนวนให้อัตโนมัติ</p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <input value={countName} onChange={e => setCountName(e.target.value)} className="p-2 border rounded-lg text-sm w-40 outline-none focus:ring-2 focus:ring-indigo-100" placeholder="ชื่อรอบนับ" />
+                        </div>
+                    </div>
+
+                    <div className="bg-white p-6 rounded-2xl shadow-sm border">
+                        <div className="flex flex-col sm:flex-row gap-3">
+                            <div className="flex-1">
+                                <label className="block text-xs font-bold text-slate-500 mb-1">Part No (สแกน/พิมพ์)</label>
+                                <input
+                                    ref={inputRef}
+                                    type="text"
+                                    value={inputPartNo}
+                                    onChange={e => setInputPartNo(e.target.value)}
+                                    onKeyDown={e => { if (e.key === 'Enter') handleAdd(); }}
+                                    className="w-full p-3 border-2 border-indigo-200 rounded-xl text-lg font-mono outline-none focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500"
+                                    placeholder="สแกนบาร์โค้ด หรือพิมพ์รหัส..."
+                                    autoComplete="off"
+                                />
+                            </div>
+                            <div className="w-24">
+                                <label className="block text-xs font-bold text-slate-500 mb-1">จำนวน</label>
+                                <input
+                                    type="number"
+                                    value={inputQty}
+                                    onChange={e => setInputQty(e.target.value)}
+                                    onKeyDown={e => { if (e.key === 'Enter') handleAdd(); }}
+                                    className="w-full p-3 border rounded-xl text-lg text-center outline-none focus:ring-2 focus:ring-indigo-100"
+                                    min="1"
+                                />
+                            </div>
+                            <div className="flex items-end">
+                                <button onClick={handleAdd} className="bg-indigo-600 text-white px-6 py-3 rounded-xl font-bold text-lg hover:bg-indigo-700 shadow-lg flex items-center gap-2 whitespace-nowrap">
+                                    <Icons.Plus/> เพิ่ม
+                                </button>
+                            </div>
+                        </div>
+
+                        {countItems.length > 0 && (
+                            <div className="mt-4 flex items-center gap-3 text-sm">
+                                <span className="bg-indigo-100 text-indigo-700 px-3 py-1 rounded-full font-bold">{stats.total} รายการ</span>
+                                <span className="bg-green-100 text-green-700 px-3 py-1 rounded-full font-bold">{stats.matched} ตรง</span>
+                                {stats.over > 0 && <span className="bg-blue-100 text-blue-700 px-3 py-1 rounded-full font-bold">{stats.over} เกิน</span>}
+                                {stats.short > 0 && <span className="bg-red-100 text-red-700 px-3 py-1 rounded-full font-bold">{stats.short} ขาด</span>}
+                            </div>
+                        )}
+                    </div>
+
+                    {countItems.length > 0 && (
+                        <div className="bg-white rounded-2xl shadow-sm border overflow-hidden">
+                            <div className="flex flex-col sm:flex-row justify-between items-center gap-3 p-4 border-b bg-slate-50">
+                                <div className="flex gap-2">
+                                    <button onClick={() => setShowSummary(false)} className={`px-4 py-2 rounded-lg text-sm font-bold ${!showSummary ? 'bg-indigo-600 text-white' : 'bg-white text-slate-500 border'}`}>รายการนับ</button>
+                                    <button onClick={() => setShowSummary(true)} className={`px-4 py-2 rounded-lg text-sm font-bold ${showSummary ? 'bg-indigo-600 text-white' : 'bg-white text-slate-500 border'}`}>สรุปเทียบระบบ</button>
+                                </div>
+                                <div className="flex gap-2">
+                                    <button onClick={handleExport} className="bg-emerald-600 text-white px-3 py-2 rounded-lg text-sm font-bold flex items-center gap-1"><Icons.Excel/> Export</button>
+                                    <button onClick={handleClearAll} className="bg-red-100 text-red-600 px-3 py-2 rounded-lg text-sm font-bold flex items-center gap-1"><Icons.Trash/> ล้าง</button>
+                                </div>
+                            </div>
+
+                            {!showSummary ? (
+                                <div className="overflow-x-auto max-h-[55vh] overflow-y-auto">
+                                    <table className="w-full text-sm text-left">
+                                        <thead className="bg-slate-50 sticky top-0 text-slate-500 font-bold border-b">
+                                            <tr>
+                                                <th className="p-4">#</th>
+                                                <th className="p-4">Part No</th>
+                                                <th className="p-4">Description</th>
+                                                <th className="p-4 text-right">นับได้</th>
+                                                <th className="p-4 text-right">ในระบบ</th>
+                                                <th className="p-4 text-right">ผลต่าง</th>
+                                                <th className="p-4 text-center">Action</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y">
+                                            {[...countItems].reverse().map((item, i) => {
+                                                const diff = item.counted - item.systemQty;
+                                                return (
+                                                    <tr key={item.partNo} className={`hover:bg-slate-50 ${diff !== 0 ? 'bg-orange-50/50' : ''}`}>
+                                                        <td className="p-4 text-slate-300">{countItems.length - i}</td>
+                                                        <td className="p-4 font-mono font-bold text-blue-600">{item.partNo}</td>
+                                                        <td className="p-4 text-slate-600">{item.name} {!item.inSystem && <span className="text-[10px] bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded ml-1">NEW</span>}</td>
+                                                        <td className="p-4 text-right">
+                                                            <input type="number" value={item.counted} onChange={e => handleEditCounted(item.partNo, e.target.value)} className="w-20 text-right p-1 border rounded font-bold text-indigo-700 outline-none focus:ring-2 focus:ring-indigo-100" />
+                                                        </td>
+                                                        <td className="p-4 text-right text-slate-400">{formatNum(item.systemQty)}</td>
+                                                        <td className={`p-4 text-right font-bold ${diff > 0 ? 'text-blue-600' : diff < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                                                            {diff > 0 ? '+' : ''}{formatNum(diff)}
+                                                        </td>
+                                                        <td className="p-4 text-center">
+                                                            <button onClick={() => handleRemoveItem(item.partNo)} className="text-slate-300 hover:text-red-500"><Icons.Trash/></button>
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            ) : (
+                                <div>
+                                    <div className="flex gap-2 p-4 border-b">
+                                        {[['all', 'ทั้งหมด'], ['diff', 'ไม่ตรง'], ['ok', 'ตรง']].map(([val, label]) => (
+                                            <button key={val} onClick={() => setFilterDiff(val)} className={`px-3 py-1 rounded-full text-xs font-bold ${filterDiff === val ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-500'}`}>{label}</button>
+                                        ))}
+                                    </div>
+                                    <div className="overflow-x-auto max-h-[50vh] overflow-y-auto">
+                                        <table className="w-full text-sm text-left">
+                                            <thead className="bg-slate-50 sticky top-0 text-slate-500 font-bold border-b">
+                                                <tr>
+                                                    <th className="p-4">Part No</th>
+                                                    <th className="p-4">Description</th>
+                                                    <th className="p-4 text-right">ในระบบ</th>
+                                                    <th className="p-4 text-right">นับได้</th>
+                                                    <th className="p-4 text-right">ผลต่าง</th>
+                                                    <th className="p-4 text-center">Status</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y">
+                                                {filteredSummary.map((item, i) => (
+                                                    <tr key={item.partNo} className={`hover:bg-slate-50 ${item.diff !== 0 ? 'bg-orange-50/50' : ''}`}>
+                                                        <td className="p-4 font-mono font-bold text-blue-600">{item.partNo}</td>
+                                                        <td className="p-4 text-slate-600">{item.name}</td>
+                                                        <td className="p-4 text-right text-slate-400">{formatNum(item.systemQty)}</td>
+                                                        <td className="p-4 text-right font-bold text-indigo-700">{formatNum(item.counted)}</td>
+                                                        <td className={`p-4 text-right font-bold ${item.diff > 0 ? 'text-blue-600' : item.diff < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                                                            {item.diff > 0 ? '+' : ''}{formatNum(item.diff)}
+                                                        </td>
+                                                        <td className="p-4 text-center">
+                                                            {item.diff === 0
+                                                                ? <span className="text-[10px] bg-green-600 text-white px-2 py-0.5 rounded">OK</span>
+                                                                : item.diff > 0
+                                                                ? <span className="text-[10px] bg-blue-600 text-white px-2 py-0.5 rounded">Over +{formatNum(item.diff)}</span>
+                                                                : <span className="text-[10px] bg-red-600 text-white px-2 py-0.5 rounded">Short {formatNum(item.diff)}</span>
+                                                            }
+                                                        </td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                    <div className="p-4 border-t bg-slate-50 flex justify-end">
+                                        <button onClick={() => setShowConfirm(true)} className="bg-indigo-600 text-white px-6 py-3 rounded-xl font-bold shadow-lg hover:bg-indigo-700 flex items-center gap-2">
+                                            <Icons.Check/> ยืนยันปรับสต๊อกตามผลนับ
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {countItems.length === 0 && (
+                        <div className="bg-white rounded-2xl shadow-sm border p-12 text-center">
+                            <div className="w-20 h-20 bg-indigo-100 rounded-full flex items-center justify-center mx-auto mb-4 text-indigo-400 text-3xl"><Icons.Clipboard/></div>
+                            <h3 className="text-lg font-bold text-slate-700 mb-2">เริ่มนับสต๊อก</h3>
+                            <p className="text-sm text-slate-400 max-w-md mx-auto">สแกนบาร์โค้ดหรือพิมพ์ Part No แล้วกด Enter<br/>ระบบจะรวมจำนวนให้อัตโนมัติหากรหัสซ้ำ</p>
+                        </div>
+                    )}
+
+                    {showConfirm && (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 modal-overlay">
+                            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 animate-fade-in">
+                                <h3 className="text-lg font-bold mb-2 flex items-center gap-2"><Icons.Warn className="text-orange-500"/> ยืนยันปรับสต๊อก</h3>
+                                <p className="text-sm text-slate-500 mb-4">ระบบจะปรับสต๊อกในคลังให้ตรงกับยอดนับจริง (เฉพาะรายการที่มีผลต่าง)</p>
+                                <div className="bg-slate-50 rounded-xl p-4 mb-4 text-sm space-y-1">
+                                    <div className="flex justify-between"><span className="text-slate-500">รอบนับ:</span><span className="font-bold">{countName}</span></div>
+                                    <div className="flex justify-between"><span className="text-slate-500">รายการที่จะปรับ:</span><span className="font-bold text-orange-600">{countItems.filter(i => i.counted !== i.systemQty).length} รายการ</span></div>
+                                    <div className="flex justify-between"><span className="text-slate-500">ผู้ดำเนินการ:</span><span className="font-bold">{currentUser.name}</span></div>
+                                </div>
+                                <div className="flex gap-3">
+                                    <button onClick={() => setShowConfirm(false)} className="flex-1 py-3 bg-slate-100 text-slate-500 font-bold rounded-xl">ยกเลิก</button>
+                                    <button onClick={handleApplyAdjust} className="flex-1 py-3 bg-indigo-600 text-white font-bold rounded-xl shadow-lg hover:bg-indigo-700">ยืนยัน Adjust</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
         const HistoryView = ({ transactions }) => (
             <div className="space-y-6">
                 <div className="flex justify-between items-center"><h2 className="text-2xl font-bold">History</h2><button onClick={()=>exportToExcel(transactions, "Log")} className="text-xs bg-emerald-100 text-emerald-700 px-3 py-1 rounded font-bold"><Icons.Download/> Export</button></div>
