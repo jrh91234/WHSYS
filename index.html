@@ -1452,13 +1452,33 @@
                 setShowSummary(false);
             };
 
-            const handleApplyAdjust = () => {
+            const handleApplyAdjust = async () => {
                 const itemsToAdjust = countItems.filter(i => i.counted !== i.systemQty);
                 if (itemsToAdjust.length === 0) { alert("ไม่มีรายการที่ต้อง Adjust"); return; }
 
+                let updatedInv = [...inventory];
                 itemsToAdjust.forEach(item => {
-                    addTransaction('ADJUST', item.partNo, item.counted, countName, `Stock Count: ${item.systemQty} -> ${item.counted}`, !item.inSystem ? { partNo: item.partNo, name: item.name, qty: item.counted, location: '-', unit: 'PCS', minStock: 0 } : null);
+                    const idx = updatedInv.findIndex(i => String(i.partNo).toUpperCase() === item.partNo);
+                    if (idx >= 0) {
+                        updatedInv[idx] = { ...updatedInv[idx], qty: item.counted };
+                    } else {
+                        updatedInv.push({ partNo: item.partNo, name: item.name, qty: item.counted, location: '-', unit: 'PCS', minStock: 0 });
+                    }
                 });
+                setInventory(updatedInv);
+
+                if (apiUrl) {
+                    fetch(apiUrl, {
+                        method: "POST",
+                        mode: "no-cors",
+                        body: JSON.stringify({
+                            action: "bulk_stock_count",
+                            items: itemsToAdjust.map(i => ({ partNo: i.partNo, name: i.name, counted: i.counted, systemQty: i.systemQty })),
+                            countName: countName,
+                            user: currentUser.name
+                        })
+                    });
+                }
 
                 alert(`ปรับสต๊อกเรียบร้อย ${itemsToAdjust.length} รายการ`);
                 setShowConfirm(false);

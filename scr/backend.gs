@@ -202,14 +202,47 @@ function doPost(e) {
         }
       }
       
-      if (!found && (tx.type === 'IN' || tx.type === 'INIT')) {
+      if (!found && body.itemData) {
          var item = body.itemData;
-         if(item) {
-            invSheet.appendRow([item.partNo, item.name, item.qty, item.location || "-", item.unit || "pcs", item.minStock || 0]);
-         }
+         invSheet.appendRow([item.partNo, item.name, item.qty, item.location || "-", item.unit || "pcs", item.minStock || 0]);
       }
-    } 
-    
+    }
+
+    // 3.5 BULK STOCK COUNT (นับสต๊อก - ส่งทีเดียวทั้งรอบ)
+    else if (body.action === "bulk_stock_count") {
+      var adjustItems = body.items;
+      var countName = body.countName || "STOCK_COUNT";
+      var userName = body.user || "-";
+      var data = invSheet.getDataRange().getValues();
+      var txRows = [];
+      var now = new Date().toISOString();
+
+      adjustItems.forEach(function(item) {
+        var partNoStr = String(item.partNo).trim();
+        var found = false;
+
+        for (var i = 1; i < data.length; i++) {
+          if (String(data[i][0]).trim() === partNoStr) {
+            invSheet.getRange(i + 1, 3).setValue(Number(item.counted));
+            found = true;
+            break;
+          }
+        }
+
+        if (!found) {
+          invSheet.appendRow([partNoStr, item.name || "", Number(item.counted), "-", "PCS", 0]);
+        }
+
+        txRows.push([Date.now().toString() + Math.random().toString(36).slice(2, 6), now, "ADJUST", partNoStr, Number(item.counted), countName, "Stock Count: " + (item.systemQty || 0) + " -> " + item.counted, userName]);
+      });
+
+      if (txRows.length > 0) {
+        transSheet.getRange(transSheet.getLastRow() + 1, 1, txRows.length, 8).setValues(txRows);
+      }
+
+      return ContentService.createTextOutput(JSON.stringify({ status: "success", count: txRows.length })).setMimeType(ContentService.MimeType.JSON);
+    }
+
     // 4. DELETE ITEM
     else if (body.action === "delete_item") {
        var data = invSheet.getDataRange().getValues();
