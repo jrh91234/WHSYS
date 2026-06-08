@@ -3,6 +3,25 @@
  * รวมฟังก์ชันจัดการ Inventory, Transactions, Users และ Bulk Import
  */
 
+/**
+ * ฟังก์ชันขออนุญาต Drive API — รันครั้งเดียวจาก Apps Script Editor
+ * วิธีใช้:
+ *   1. เลือกฟังก์ชันนี้จาก dropdown ด้านบน
+ *   2. กดปุ่ม Run (▶)
+ *   3. ระบบจะ popup ขอ permission → กด "Review Permissions" → เลือก Google Account → "Allow"
+ *   4. เสร็จแล้วจะเห็นข้อความ "Authorization successful" ใน Log
+ */
+function requestDrivePermission() {
+  var testBlob = Utilities.newBlob("OCR permission test", "text/plain", "permission_test.txt");
+  var file = Drive.Files.create(
+    { name: "OCR_Permission_Test", mimeType: "application/vnd.google-apps.document" },
+    testBlob,
+    { fields: "id" }
+  );
+  DriveApp.getFileById(file.id).setTrashed(true);
+  Logger.log("Authorization successful! Drive OCR is ready to use.");
+}
+
 function doGet(e) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var action = e.parameter.action;
