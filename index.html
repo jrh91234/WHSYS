@@ -929,13 +929,13 @@
                                                                 className={`p-2 border-r max-w-[150px]
                                                                 ${ci===pNoCol?'bg-blue-50 text-blue-700 font-bold truncate':''}
                                                                 ${ci===qtyCol?'bg-sky-50 text-sky-700 font-bold truncate':''}
-                                                                ${isName?'bg-emerald-50 p-0':'truncate'}
+                                                                ${isName?'bg-emerald-50 p-0 overflow-hidden':'truncate'}
                                                             `}>{isName ? (
                                                                 <button type="button"
                                                                     onClick={() => setNamePopup({ partNo: rowPartNo, name: String(c||"") })}
                                                                     title="กดเพื่อถ่ายรูป / จัดการรูปพาร์ทนี้"
-                                                                    className="w-full h-full text-left px-2 py-2 text-emerald-700 font-medium active:bg-emerald-100 hover:underline flex items-center gap-1">
-                                                                    <i className="fa-solid fa-camera text-emerald-400 text-[10px]"></i>
+                                                                    className="w-full h-full text-left px-2 py-2 text-emerald-700 font-medium active:bg-emerald-100 hover:underline flex items-center gap-1 min-w-0">
+                                                                    <i className="fa-solid fa-camera text-emerald-400 text-[10px] shrink-0"></i>
                                                                     <span className="truncate">{c}</span>
                                                                 </button>
                                                             ) : c}</td>
