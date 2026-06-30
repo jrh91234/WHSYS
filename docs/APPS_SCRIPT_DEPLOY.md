@@ -8,6 +8,24 @@
 
 ---
 
+## ⚡ ทางลัด: รันสคริปต์เดียวจบ (PowerShell บน Windows)
+เปิด PowerShell → `cd` เข้าโฟลเดอร์ repo (โฟลเดอร์ที่มี `scr/`) แล้วรัน:
+
+```powershell
+.\scripts\Deploy-AppsScript.ps1 -ScriptId "วาง_SCRIPT_ID_ที่นี่"
+```
+
+สคริปต์จะ: ติดตั้ง clasp → `clasp login` (กด Allow ในเบราว์เซอร์) → push + deploy ให้ทันที →
+ตั้ง GitHub Secrets ให้อัตโนมัติ (ถ้ามี GitHub CLI `gh`)
+
+- **Script ID** หาได้จาก Apps Script → ⚙️ Project Settings → IDs
+- **Deployment ID** สคริปต์ตั้งค่าเริ่มต้นให้ตรงกับ URL ปัจจุบันแล้ว (ส่วน `AKfyc...` ใน `/exec`)
+- ก่อนรัน ต้องเปิด Apps Script API ที่ https://script.google.com/home/usersettings ให้เป็น On
+
+ถ้าอยากทำเองทีละขั้น ดูด้านล่าง 👇
+
+---
+
 ## 1) เปิด Apps Script API
 ไปที่ https://script.google.com/home/usersettings → เปิด **Google Apps Script API** เป็น **On**
 
