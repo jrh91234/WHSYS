@@ -56,6 +56,33 @@
         // สร้าง URL รูป thumbnail จาก Google Drive fileId (ไฟล์ต้องตั้งแชร์ "ใครมีลิงก์ดูได้")
         const driveThumb = (fileId, size = 400) => fileId ? `https://drive.google.com/thumbnail?id=${fileId}&sz=w${size}` : "";
 
+        // <img> สำหรับรูป Drive ที่ทนต่อการโหลดพร้อมกันหลายรูป (rate-limit):
+        // ใช้ lh3.googleusercontent.com เป็นหลัก (เร็ว/โดน throttle น้อย) → ถ้าพลาด fallback ไป
+        // drive.google.com/thumbnail → ถ้ายังพลาดอีกให้ลองซ้ำแบบหน่วงเวลา (สูงสุด 3 ครั้ง)
+        // ถ้า src เป็น data: (รูปที่เพิ่งอัป) จะใช้ตรง ๆ ไม่ผ่าน fallback
+        const DriveImg = ({ src, fileId, size = 400, alt, className, onClick }) => {
+            const isData = !!src && src.startsWith('data:');
+            const chain = fileId ? [
+                `https://lh3.googleusercontent.com/d/${fileId}=w${size}`,
+                `https://drive.google.com/thumbnail?id=${fileId}&sz=w${size}`,
+            ] : (src ? [src] : []);
+            const [idx, setIdx] = useState(0);
+            const [bust, setBust] = useState(0);
+            const tries = useRef(0);
+            useEffect(() => { setIdx(0); setBust(0); tries.current = 0; }, [fileId, src, size]);
+
+            if (isData) return <img src={src} alt={alt} className={className} onClick={onClick} />;
+            if (chain.length === 0) return null;
+
+            const base = chain[Math.min(idx, chain.length - 1)];
+            const cur = bust ? base + (base.includes('?') ? '&' : '?') + 'r=' + bust : base;
+            const handleError = () => {
+                if (idx < chain.length - 1) { setIdx(idx + 1); return; }
+                if (tries.current < 3) { tries.current++; setTimeout(() => { setIdx(0); setBust(Date.now()); }, 500 * tries.current); }
+            };
+            return <img src={cur} alt={alt} className={className} loading="lazy" referrerPolicy="no-referrer" onClick={onClick} onError={handleError} />;
+        };
+
         const DEFAULT_API_URL = "https://script.google.com/macros/s/AKfycby923XbLtP0TxMmKNG1JyhmtZeMNNALNCCJLXWr1GI70NYH0h7AI27c7yP2-L3h9Ne_zQ/exec"; 
         
         const INITIAL_INVENTORY = [
@@ -911,7 +938,7 @@
                                                             : uploadingPart === rowPartNo ? <div className="loader mx-auto" style={{width:18,height:18,borderWidth:2}}></div>
                                                             : thumb ? (
                                                                 <div className="relative group inline-block">
-                                                                    <img src={thumb} alt={rowPartNo} loading="lazy"
+                                                                    <DriveImg src={thumb} fileId={partImages[rowPartNo]?.fileId} size={400} alt={rowPartNo}
                                                                         onClick={() => setLightbox({ partNo: rowPartNo, src: imgSrcFor(rowPartNo, 1600) })}
                                                                         className="w-10 h-10 object-cover rounded border cursor-zoom-in mx-auto" />
                                                                     <button onClick={() => pickImageFor(rowPartNo)} title="เปลี่ยนรูป"
@@ -1056,7 +1083,7 @@
                                                                 <tr key={idx} className="hover:bg-slate-50">
                                                                     <td className="p-2 text-center">
                                                                         {sThumb ? (
-                                                                            <img src={sThumb} alt={item.partNo} loading="lazy"
+                                                                            <DriveImg src={sThumb} fileId={partImages[sPartNo]?.fileId} size={400} alt={item.partNo}
                                                                                 onClick={() => setLightbox({ partNo: sPartNo, src: imgSrcFor(sPartNo, 1600) })}
                                                                                 className="w-9 h-9 object-cover rounded border cursor-zoom-in mx-auto" />
                                                                         ) : (
@@ -1654,7 +1681,7 @@
                                                         {!pNo ? <span className="text-slate-200">-</span>
                                                         : uploadingPart === pNo ? <div className="loader mx-auto" style={{width:18,height:18,borderWidth:2}}></div>
                                                         : thumb ? (
-                                                            <img src={thumb} alt={pNo} loading="lazy"
+                                                            <DriveImg src={thumb} fileId={partImages[pNo]?.fileId} size={400} alt={pNo}
                                                                 onClick={() => setLightbox({ partNo: pNo, src: imgSrcFor(pNo, 1600) })}
                                                                 className="w-11 h-11 object-cover rounded border cursor-zoom-in mx-auto" />
                                                         ) : (
