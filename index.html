@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>NLC Factory ERP - Cloud Edition</title>
+    <title>Factory BOM - Cloud Edition</title>
     
     <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
@@ -338,7 +338,7 @@
             return (
                 <div className="flex h-screen bg-slate-100 relative overflow-hidden">
                     <aside className="w-64 bg-slate-900 text-slate-300 flex flex-col hidden md:flex h-full">
-                        <div className="p-6 border-b border-slate-800 font-bold text-white flex items-center gap-2"><Icons.Warehouse/> NLC ERP</div>
+                        <div className="p-6 border-b border-slate-800 font-bold text-white flex items-center gap-2"><Icons.Warehouse/> BOM</div>
                         <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
                             <SidebarItem icon="Dashboard" label="ภาพรวม" active={currentView==='dashboard'} onClick={()=>setCurrentView('dashboard')} />
                             <SidebarItem icon="Warehouse" label="คลังสินค้า" active={currentView==='inventory'} onClick={()=>setCurrentView('inventory')} />
@@ -357,7 +357,7 @@
                     </aside>
 
                     <div className="md:hidden fixed top-0 left-0 right-0 bg-slate-900 text-white p-4 z-30 flex justify-between items-center shadow-lg">
-                        <div className="font-bold flex items-center gap-2"><Icons.Warehouse/> NLC ERP</div>
+                        <div className="font-bold flex items-center gap-2"><Icons.Warehouse/> BOM</div>
                         <div className="flex items-center gap-3">
                              {isSyncing && <div className="text-blue-400 flex items-center justify-center gap-1 text-xs"><div className="loader w-2 h-2 border-white border-t-transparent"></div></div>}
                             <button onClick={()=>setCurrentUser(null)} className="text-xs bg-slate-800 px-3 py-1 rounded">Logout</button>
