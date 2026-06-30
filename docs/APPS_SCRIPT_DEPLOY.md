@@ -12,15 +12,15 @@
 เปิด PowerShell → `cd` เข้าโฟลเดอร์ repo (โฟลเดอร์ที่มี `scr/`) แล้วรัน:
 
 ```powershell
-.\scripts\Deploy-AppsScript.ps1 -ScriptId "วาง_SCRIPT_ID_ที่นี่"
+.\scripts\Deploy-AppsScript.ps1
 ```
 
 สคริปต์จะ: ติดตั้ง clasp → `clasp login` (กด Allow ในเบราว์เซอร์) → push + deploy ให้ทันที →
-ตั้ง GitHub Secrets ให้อัตโนมัติ (ถ้ามี GitHub CLI `gh`)
+ตั้ง GitHub Secret `CLASPRC_JSON` ให้อัตโนมัติ (ถ้ามี GitHub CLI `gh`)
 
-- **Script ID** หาได้จาก Apps Script → ⚙️ Project Settings → IDs
-- **Deployment ID** สคริปต์ตั้งค่าเริ่มต้นให้ตรงกับ URL ปัจจุบันแล้ว (ส่วน `AKfyc...` ใน `/exec`)
+- **Script ID** และ **Deployment ID** ฝังเป็นค่าเริ่มต้นไว้แล้ว (ตรงกับโปรเจกต์นี้) — รันเปล่า ๆ ได้เลย
 - ก่อนรัน ต้องเปิด Apps Script API ที่ https://script.google.com/home/usersettings ให้เป็น On
+- ต้องล็อกอินด้วยบัญชี Google **ที่เป็นเจ้าของ Apps Script/ชีต**
 
 ถ้าอยากทำเองทีละขั้น ดูด้านล่าง 👇
 
@@ -36,21 +36,17 @@ clasp login        # เปิดเบราว์เซอร์ให้ก�
 ```
 เสร็จแล้วจะได้ไฟล์ `~/.clasprc.json` (มี refresh token) — **ไฟล์นี้คือความลับ ห้าม commit**
 
-## 3) หา Script ID และ Deployment ID
-- **Script ID**: เปิดโปรเจกต์ Apps Script → ⚙️ Project Settings → หัวข้อ **IDs** → คัดลอก *Script ID*
-- **Deployment ID**: ใน Apps Script editor → **Deploy → Manage deployments** → เลือก web app ตัวที่ใช้อยู่ → คัดลอก **Deployment ID** (ขึ้นต้นด้วย `AKfyc...`)
-  - ต้องใช้ตัวเดิมเพื่อให้ URL `/exec` ไม่เปลี่ยน (ไม่ต้องไปแก้ใน Settings ของแอป)
-
-## 4) ใส่ GitHub Secrets
-ไปที่ repo → **Settings → Secrets and variables → Actions → New repository secret** เพิ่ม 3 ตัว:
+## 3) ใส่ GitHub Secret (ตัวเดียว)
+ไปที่ repo → **Settings → Secrets and variables → Actions → New repository secret**:
 
 | ชื่อ Secret | ค่า |
 |---|---|
 | `CLASPRC_JSON` | เนื้อหาทั้งหมดของไฟล์ `~/.clasprc.json` (วางทั้งก้อน JSON) |
-| `SCRIPT_ID` | Script ID จากข้อ 3 |
-| `DEPLOYMENT_ID` | Deployment ID จากข้อ 3 |
 
-## 5) เสร็จแล้ว
+> `SCRIPT_ID` และ `DEPLOYMENT_ID` ฝังไว้ใน `.github/workflows/deploy-apps-script.yml` แล้ว (ไม่ใช่ความลับ)
+> ถ้าโปรเจกต์เปลี่ยน ให้แก้ค่า 2 ตัวนี้ใน `env:` ของ workflow
+
+## 4) เสร็จแล้ว
 - push อะไรก็ได้เข้า `main` ที่แตะ `scr/` → ดูผลที่แท็บ **Actions**
 - หรือกดรันเองได้ที่ Actions → **Deploy Apps Script** → **Run workflow**
 

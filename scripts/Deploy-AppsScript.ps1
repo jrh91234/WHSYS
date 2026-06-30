@@ -19,13 +19,12 @@
   ค่าเริ่มต้นตั้งไว้ตรงกับ URL ในโค้ดปัจจุบันแล้ว
 
 .EXAMPLE
-  .\scripts\Deploy-AppsScript.ps1 -ScriptId "วาง_SCRIPT_ID_ที่นี่"
+  .\scripts\Deploy-AppsScript.ps1
+  # ScriptId / DeploymentId มีค่าเริ่มต้นตรงกับโปรเจกต์นี้แล้ว รันเปล่า ๆ ได้เลย
 #>
 
 param(
-  [Parameter(Mandatory = $true)]
-  [string]$ScriptId,
-
+  [string]$ScriptId = "1bU0bZ-GBs7TKbnfofO2fnegP8akXyofR-BQFTi6asKgkQ7sZP4bYc6a4",
   [string]$DeploymentId = "AKfycby923XbLtP0TxMmKNG1JyhmtZeMNNALNCCJLXWr1GI70NYH0h7AI27c7yP2-L3h9Ne_zQ"
 )
 
@@ -73,17 +72,14 @@ Info "re-deploy web app (คง URL /exec เดิม)"
 clasp deploy --deploymentId $DeploymentId --description ("manual " + (Get-Date -Format "yyyy-MM-dd HH:mm"))
 Ok "deploy เสร็จ — ลองอัปโหลดรูปในแอปได้เลย"
 
-# 4) ตั้ง GitHub Secrets ให้ CI deploy อัตโนมัติต่อไป
+# 4) ตั้ง GitHub Secret ตัวเดียว (CLASPRC_JSON) ให้ CI deploy อัตโนมัติต่อไป
+#    SCRIPT_ID / DEPLOYMENT_ID ฝังไว้ใน workflow แล้ว (ไม่ใช่ความลับ)
 if (Get-Command gh -ErrorAction SilentlyContinue) {
-  Info "ตั้ง GitHub Secrets ผ่าน gh CLI"
+  Info "ตั้ง GitHub Secret CLASPRC_JSON ผ่าน gh CLI"
   Get-Content $clasprc -Raw | gh secret set CLASPRC_JSON
-  gh secret set SCRIPT_ID --body $ScriptId
-  gh secret set DEPLOYMENT_ID --body $DeploymentId
-  Ok "ตั้ง Secrets ครบ (CLASPRC_JSON / SCRIPT_ID / DEPLOYMENT_ID) — ครั้งต่อไปแค่ push เข้า main ก็ deploy เอง"
+  Ok "ตั้ง Secret เรียบร้อย — ครั้งต่อไปแค่ push เข้า main ที่แตะ scr/ ก็ deploy เอง"
 } else {
-  Warn "ไม่พบ GitHub CLI (gh) — ข้ามการตั้ง Secrets อัตโนมัติ"
+  Warn "ไม่พบ GitHub CLI (gh) — ข้ามการตั้ง Secret อัตโนมัติ"
   Warn "ไปตั้งเองที่ repo → Settings → Secrets and variables → Actions → New repository secret:"
-  Write-Host "    CLASPRC_JSON  = เนื้อหาทั้งหมดของไฟล์ $clasprc"
-  Write-Host "    SCRIPT_ID     = $ScriptId"
-  Write-Host "    DEPLOYMENT_ID = $DeploymentId"
+  Write-Host "    CLASPRC_JSON = เนื้อหาทั้งหมดของไฟล์ $clasprc"
 }
