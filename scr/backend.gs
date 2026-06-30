@@ -25,6 +25,23 @@ function requestDrivePermission() {
   Logger.log("Authorization successful! Drive OCR is ready to use.");
 }
 
+/**
+ * คืนโฟลเดอร์ Drive สำหรับเก็บรูป BOM (สร้างครั้งแรกอัตโนมัติ แล้วจำ ID ไว้ใน Script Properties)
+ */
+function getOrCreateImageFolder_() {
+  var props = PropertiesService.getScriptProperties();
+  var folderId = props.getProperty("BOM_IMAGE_FOLDER_ID");
+  if (folderId) {
+    try {
+      var existing = DriveApp.getFolderById(folderId);
+      if (!existing.isTrashed()) return existing; // ถ้าโดน trash อยู่ ให้สร้างใหม่ ไม่งั้นไฟล์จะไปกองในถังขยะ
+    } catch (err) { /* ถูกลบถาวร → สร้างใหม่ */ }
+  }
+  var folder = DriveApp.createFolder("WHSYS_BOM_Images");
+  props.setProperty("BOM_IMAGE_FOLDER_ID", folder.getId());
+  return folder;
+}
+
 function doGet(e) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var action = e.parameter.action;
@@ -47,7 +64,7 @@ function doGet(e) {
     if (action == "getBOM") {
       var allSheets = ss.getSheets();
       var bomData = {};
-      var systemSheets = ["Inventory", "Transactions", "Users"];
+      var systemSheets = ["Inventory", "Transactions", "Users", "PartImages"];
       
       for (var i = 0; i < allSheets.length; i++) {
         var sheet = allSheets[i];
@@ -57,6 +74,26 @@ function doGet(e) {
         }
       }
       return ContentService.createTextOutput(JSON.stringify({ data: bomData })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    if (action == "getImages") {
+      var imgSheet = ss.getSheetByName("PartImages");
+      var images = {};
+      if (imgSheet && imgSheet.getLastRow() > 1) {
+        var idata = imgSheet.getDataRange().getValues();
+        for (var i = 1; i < idata.length; i++) {
+          var pNo = String(idata[i][0]).trim();
+          if (pNo) {
+            images[pNo] = {
+              fileId: String(idata[i][1]),
+              url: String(idata[i][2]),
+              updatedAt: idata[i][3],
+              user: idata[i][4]
+            };
+          }
+        }
+      }
+      return ContentService.createTextOutput(JSON.stringify({ images: images })).setMimeType(ContentService.MimeType.JSON);
     }
 
     if (action == "getInventory") {
@@ -288,6 +325,68 @@ function doPost(e) {
         status: "success",
         text: text
       })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // 3.8 UPLOAD BOM PART IMAGE (อัปโหลดรูปประจำ Part No → Drive → เก็บลิงก์ใน sheet PartImages)
+    // ผูกรูปกับ Part No: part เดียวกันที่อยู่หลายรุ่นจะใช้รูปร่วมกัน อัปครั้งเดียวโชว์ทุกที่
+    else if (body.action === "upload_part_image") {
+      var partNo = String(body.partNo || "").trim();
+      if (!partNo) throw new Error("Missing partNo");
+
+      var imgMime = body.mimeType || "image/jpeg";
+      var imgName = "BOM_" + partNo + "_" + Date.now();
+      var imgBlob = Utilities.newBlob(Utilities.base64Decode(body.imageData), imgMime, imgName);
+
+      var folder = getOrCreateImageFolder_();
+      var file = folder.createFile(imgBlob);
+      try { file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW); } catch (shareErr) {}
+
+      var fileId = file.getId();
+      var url = "https://drive.google.com/thumbnail?id=" + fileId + "&sz=w1000";
+
+      var imgSheet = ss.getSheetByName("PartImages");
+      if (!imgSheet) {
+        imgSheet = ss.insertSheet("PartImages");
+        imgSheet.appendRow(["PartNo", "FileId", "Url", "UpdatedAt", "User"]);
+      }
+
+      var idata = imgSheet.getDataRange().getValues();
+      var foundRow = -1, oldId = "";
+      for (var i = 1; i < idata.length; i++) {
+        if (String(idata[i][0]).trim() === partNo) { foundRow = i + 1; oldId = String(idata[i][1]); break; }
+      }
+
+      var now = new Date().toISOString();
+      var who = body.user || "-";
+      if (foundRow > 0) {
+        if (oldId) { try { DriveApp.getFileById(oldId).setTrashed(true); } catch (delErr) {} }
+        imgSheet.getRange(foundRow, 2).setValue(fileId);
+        imgSheet.getRange(foundRow, 3).setValue(url);
+        imgSheet.getRange(foundRow, 4).setValue(now);
+        imgSheet.getRange(foundRow, 5).setValue(who);
+      } else {
+        imgSheet.appendRow([partNo, fileId, url, now, who]);
+      }
+
+      return ContentService.createTextOutput(JSON.stringify({
+        status: "success", partNo: partNo, fileId: fileId, url: url
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // 3.9 DELETE BOM PART IMAGE
+    else if (body.action === "delete_part_image") {
+      var delPartNo = String(body.partNo || "").trim();
+      var imgSheet2 = ss.getSheetByName("PartImages");
+      if (imgSheet2) {
+        var idata2 = imgSheet2.getDataRange().getValues();
+        for (var j = 1; j < idata2.length; j++) {
+          if (String(idata2[j][0]).trim() === delPartNo) {
+            if (idata2[j][1]) { try { DriveApp.getFileById(String(idata2[j][1])).setTrashed(true); } catch (delErr2) {} }
+            imgSheet2.deleteRow(j + 1);
+            break;
+          }
+        }
+      }
     }
 
     // 4. DELETE ITEM
