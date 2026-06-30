@@ -43,7 +43,24 @@ jobs:
       - name: Write clasp credentials (~/.clasprc.json)
         env:
           CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
-        run: printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
+        # รองรับ token ทั้งรูปแบบ clasp v2 ({"token":...}) และ v3 ({"tokens":{"default":...}})
+        # ถ้าเป็น v3 จะแปลงเป็นรูปแบบ v2 ที่ clasp@2.4.2 อ่านได้ (clasp จะ refresh เองด้วย refresh_token)
+        run: |
+          echo "$CLASPRC_JSON" | jq 'if .token then . else {
+            token: {
+              access_token: .tokens.default.access_token,
+              refresh_token: .tokens.default.refresh_token,
+              scope: (.tokens.default.scope // "https://www.googleapis.com/auth/script.projects https://www.googleapis.com/auth/script.deployments https://www.googleapis.com/auth/script.webapp.deploy https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/service.management https://www.googleapis.com/auth/logging.read"),
+              token_type: "Bearer",
+              expiry_date: 1
+            },
+            oauth2ClientSettings: {
+              clientId: .tokens.default.client_id,
+              clientSecret: .tokens.default.client_secret,
+              redirectUri: "http://localhost"
+            },
+            isLocalCreds: false
+          } end' > "$HOME/.clasprc.json"
 
       - name: Write .clasp.json
         run: printf '{"scriptId":"%s","rootDir":"scr"}' "$SCRIPT_ID" > .clasp.json
