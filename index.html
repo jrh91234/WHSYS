@@ -926,13 +926,19 @@
                                                             const isName = ci===nameCol && rowPartNo;
                                                             return (
                                                             <td key={ci}
-                                                                onClick={isName ? () => setNamePopup({ partNo: rowPartNo, name: String(c||"") }) : undefined}
-                                                                title={isName ? "กดเพื่อถ่ายรูป / จัดการรูปพาร์ทนี้" : undefined}
-                                                                className={`p-2 border-r truncate max-w-[150px]
-                                                                ${ci===pNoCol?'bg-blue-50 text-blue-700 font-bold':''}
-                                                                ${ci===qtyCol?'bg-sky-50 text-sky-700 font-bold':''}
-                                                                ${isName?'bg-emerald-50 text-emerald-700 cursor-pointer hover:bg-emerald-100 hover:underline':''}
-                                                            `}>{isName ? <span><i className="fa-solid fa-camera text-emerald-400 mr-1 text-[10px]"></i>{c}</span> : c}</td>
+                                                                className={`p-2 border-r max-w-[150px]
+                                                                ${ci===pNoCol?'bg-blue-50 text-blue-700 font-bold truncate':''}
+                                                                ${ci===qtyCol?'bg-sky-50 text-sky-700 font-bold truncate':''}
+                                                                ${isName?'bg-emerald-50 p-0 overflow-hidden':'truncate'}
+                                                            `}>{isName ? (
+                                                                <button type="button"
+                                                                    onClick={() => setNamePopup({ partNo: rowPartNo, name: String(c||"") })}
+                                                                    title="กดเพื่อถ่ายรูป / จัดการรูปพาร์ทนี้"
+                                                                    className="w-full h-full text-left px-2 py-2 text-emerald-700 font-medium active:bg-emerald-100 hover:underline flex items-center gap-1 min-w-0">
+                                                                    <i className="fa-solid fa-camera text-emerald-400 text-[10px] shrink-0"></i>
+                                                                    <span className="truncate">{c}</span>
+                                                                </button>
+                                                            ) : c}</td>
                                                             );
                                                         })}
                                                     </tr>
@@ -1058,11 +1064,21 @@
                                                                                 className="w-9 h-9 rounded border border-dashed border-slate-300 text-slate-300 hover:text-blue-500 hover:border-blue-400 mx-auto flex items-center justify-center"><i className="fa-solid fa-camera"></i></button>
                                                                         )}
                                                                     </td>
-                                                                    <td className={"p-3 " + (sPartNo ? "cursor-pointer hover:bg-emerald-50" : "")}
-                                                                        onClick={sPartNo ? () => setNamePopup({ partNo: sPartNo, name: String(item.name||"") }) : undefined}
-                                                                        title={sPartNo ? "กดเพื่อถ่ายรูป / จัดการรูปพาร์ทนี้" : undefined}>
-                                                                        <div className="font-bold text-blue-600">{item.partNo}</div>
-                                                                        <div className="text-slate-500">{sPartNo && <i className="fa-solid fa-camera text-emerald-400 mr-1 text-[10px]"></i>}{item.name}</div>
+                                                                    <td className={sPartNo ? "p-0" : "p-3"}>
+                                                                        {sPartNo ? (
+                                                                            <button type="button"
+                                                                                onClick={() => setNamePopup({ partNo: sPartNo, name: String(item.name||"") })}
+                                                                                title="กดเพื่อถ่ายรูป / จัดการรูปพาร์ทนี้"
+                                                                                className="w-full text-left p-3 active:bg-emerald-100 hover:bg-emerald-50">
+                                                                                <div className="font-bold text-blue-600">{item.partNo}</div>
+                                                                                <div className="text-slate-500"><i className="fa-solid fa-camera text-emerald-400 mr-1 text-[10px]"></i>{item.name}</div>
+                                                                            </button>
+                                                                        ) : (
+                                                                            <div className="p-3">
+                                                                                <div className="font-bold text-blue-600">{item.partNo}</div>
+                                                                                <div className="text-slate-500">{item.name}</div>
+                                                                            </div>
+                                                                        )}
                                                                     </td>
                                                                     <td className="p-3 font-bold text-slate-700">{item.model}</td>
                                                                     <td className="p-3 text-right">{formatNum(item.qty)}</td>

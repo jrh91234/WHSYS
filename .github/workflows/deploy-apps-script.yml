@@ -1,0 +1,55 @@
+name: Deploy Apps Script
+
+# Push โค้ดใน scr/ ขึ้น Google Apps Script แล้ว re-deploy web app (Anyone) อัตโนมัติ
+# ทำงานเมื่อ push เข้า main และแตะไฟล์ใน scr/ (หรือสั่งรันเองจากแท็บ Actions)
+#
+# ต้องตั้ง GitHub Secret ตัวเดียว (ดู docs/APPS_SCRIPT_DEPLOY.md):
+#   CLASPRC_JSON   = เนื้อหาไฟล์ ~/.clasprc.json จาก `clasp login` ในเครื่อง (credential)
+# ส่วน SCRIPT_ID และ DEPLOYMENT_ID เป็นตัวระบุโปรเจกต์ (ไม่ใช่ความลับ) ฝังไว้ใน env ด้านล่าง
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scr/**'
+      - '.github/workflows/deploy-apps-script.yml'
+  workflow_dispatch:
+
+# กันไม่ให้ deploy ซ้อนกันหลายรอบพร้อมกัน
+concurrency:
+  group: deploy-apps-script
+  cancel-in-progress: false
+
+env:
+  # ตัวระบุโปรเจกต์ (ไม่ใช่ความลับ) — DEPLOYMENT_ID คือส่วน AKfyc... ใน URL /exec ที่เปิดเผยอยู่แล้ว
+  SCRIPT_ID: "1bU0bZ-GBs7TKbnfofO2fnegP8akXyofR-BQFTi6asKgkQ7sZP4bYc6a4"
+  DEPLOYMENT_ID: "AKfycby923XbLtP0TxMmKNG1JyhmtZeMNNALNCCJLXWr1GI70NYH0h7AI27c7yP2-L3h9Ne_zQ"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install clasp
+        run: npm install -g @google/clasp@2.4.2
+
+      - name: Write clasp credentials (~/.clasprc.json)
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+        run: printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
+
+      - name: Write .clasp.json
+        run: printf '{"scriptId":"%s","rootDir":"scr"}' "$SCRIPT_ID" > .clasp.json
+
+      - name: Push code to Apps Script
+        run: clasp push --force
+
+      - name: Re-deploy web app (keep same /exec URL)
+        run: clasp deploy --deploymentId "$DEPLOYMENT_ID" --description "CI ${GITHUB_SHA}"
