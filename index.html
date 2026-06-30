@@ -497,6 +497,7 @@
             const pickImageFor = (partNo, useCamera = false) => {
                 if (!partNo) return;
                 if (!apiUrl) return alert("กรุณาตั้งค่า API URL ก่อนอัปโหลดรูป");
+                if (!imgFileRef.current) return;
                 uploadTargetPart.current = partNo;
                 // useCamera = true → เปิดกล้องหลังของมือถือเลย (เดสก์ท็อปจะ fallback เป็นเลือกไฟล์)
                 if (useCamera) imgFileRef.current.setAttribute('capture', 'environment');
@@ -791,6 +792,8 @@
                 return sortableItems;
             }, [finalSummary, sortConfig]);
 
+            const popHasImg = namePopup ? !!imgSrcFor(namePopup.partNo) : false;
+
             return (
                 <div className="animate-fade-in space-y-6">
                     <input type="file" ref={imgFileRef} onChange={handleImageFile} className="hidden" accept="image/*" />
@@ -811,51 +814,47 @@
                         </div>
                     )}
 
-                    {namePopup && (() => {
-                        const hasImg = !!imgSrcFor(namePopup.partNo);
-                        const close = () => setNamePopup(null);
-                        return (
-                            <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center p-4 modal-overlay" onClick={close}>
-                                <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-5 animate-fade-in" onClick={e => e.stopPropagation()}>
-                                    <div className="flex justify-between items-start mb-1">
-                                        <div className="min-w-0">
-                                            <div className="font-mono font-bold text-blue-600 truncate">{namePopup.partNo}</div>
-                                            <div className="text-sm text-slate-500 truncate">{namePopup.name}</div>
-                                        </div>
-                                        <button onClick={close} className="text-slate-400 hover:text-slate-600 text-xl ml-2"><Icons.X/></button>
+                    {namePopup && (
+                        <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center p-4 modal-overlay" onClick={() => setNamePopup(null)}>
+                            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-5 animate-fade-in" onClick={e => e.stopPropagation()}>
+                                <div className="flex justify-between items-start mb-1">
+                                    <div className="min-w-0">
+                                        <div className="font-mono font-bold text-blue-600 truncate">{namePopup.partNo}</div>
+                                        <div className="text-sm text-slate-500 truncate">{namePopup.name}</div>
                                     </div>
-                                    {hasImg && (
-                                        <img src={imgSrcFor(namePopup.partNo, 1000)} alt={namePopup.partNo}
-                                            className="w-full h-40 object-contain rounded-lg border bg-slate-50 my-3" />
-                                    )}
-                                    <div className="grid grid-cols-2 gap-2 mt-3">
-                                        <button onClick={() => { const p = namePopup.partNo; close(); pickImageFor(p, true); }}
-                                            className="col-span-2 bg-emerald-600 text-white py-3 rounded-xl font-bold hover:bg-emerald-700 flex items-center justify-center gap-2">
-                                            <i className="fa-solid fa-camera"></i> ถ่ายรูป
-                                        </button>
-                                        <button onClick={() => { const p = namePopup.partNo; close(); pickImageFor(p, false); }}
+                                    <button onClick={() => setNamePopup(null)} className="text-slate-400 hover:text-slate-600 text-xl ml-2"><Icons.X/></button>
+                                </div>
+                                {popHasImg && (
+                                    <img src={imgSrcFor(namePopup.partNo, 1000)} alt={namePopup.partNo}
+                                        className="w-full h-40 object-contain rounded-lg border bg-slate-50 my-3" />
+                                )}
+                                <div className="grid grid-cols-2 gap-2 mt-3">
+                                    <button onClick={() => { const p = namePopup.partNo; setNamePopup(null); pickImageFor(p, true); }}
+                                        className="col-span-2 bg-emerald-600 text-white py-3 rounded-xl font-bold hover:bg-emerald-700 flex items-center justify-center gap-2">
+                                        <i className="fa-solid fa-camera"></i> ถ่ายรูป
+                                    </button>
+                                    <button onClick={() => { const p = namePopup.partNo; setNamePopup(null); pickImageFor(p, false); }}
+                                        className="bg-slate-100 text-slate-700 py-2.5 rounded-xl font-bold hover:bg-slate-200 flex items-center justify-center gap-2">
+                                        <i className="fa-solid fa-image"></i> เลือกจากเครื่อง
+                                    </button>
+                                    {popHasImg ? (
+                                        <button onClick={() => { const p = namePopup.partNo; setNamePopup(null); setLightbox({ partNo: p, src: imgSrcFor(p, 1600) }); }}
                                             className="bg-slate-100 text-slate-700 py-2.5 rounded-xl font-bold hover:bg-slate-200 flex items-center justify-center gap-2">
-                                            <i className="fa-solid fa-image"></i> เลือกจากเครื่อง
+                                            <i className="fa-solid fa-expand"></i> ดูเต็มจอ
                                         </button>
-                                        {hasImg ? (
-                                            <button onClick={() => { const p = namePopup.partNo; close(); setLightbox({ partNo: p, src: imgSrcFor(p, 1600) }); }}
-                                                className="bg-slate-100 text-slate-700 py-2.5 rounded-xl font-bold hover:bg-slate-200 flex items-center justify-center gap-2">
-                                                <i className="fa-solid fa-expand"></i> ดูเต็มจอ
-                                            </button>
-                                        ) : (
-                                            <div className="flex items-center justify-center text-xs text-slate-400">ยังไม่มีรูป</div>
-                                        )}
-                                        {hasImg && (
-                                            <button onClick={() => { const p = namePopup.partNo; close(); handleDeleteImage(p); }}
-                                                className="col-span-2 text-red-500 py-2 rounded-xl font-bold hover:bg-red-50 flex items-center justify-center gap-2">
-                                                <i className="fa-solid fa-trash-can"></i> ลบรูป
-                                            </button>
-                                        )}
-                                    </div>
+                                    ) : (
+                                        <div className="flex items-center justify-center text-xs text-slate-400">ยังไม่มีรูป</div>
+                                    )}
+                                    {popHasImg && (
+                                        <button onClick={() => { const p = namePopup.partNo; setNamePopup(null); handleDeleteImage(p); }}
+                                            className="col-span-2 text-red-500 py-2 rounded-xl font-bold hover:bg-red-50 flex items-center justify-center gap-2">
+                                            <i className="fa-solid fa-trash-can"></i> ลบรูป
+                                        </button>
+                                    )}
                                 </div>
                             </div>
-                        );
-                    })()}
+                        </div>
+                    )}
 
                     <div className="flex bg-white p-2 rounded-xl shadow-sm border mb-6">
                         {['1. Setup BOM', '2. Functions', '3. Result'].map((t, i) => (
@@ -1045,22 +1044,25 @@
                                                             <tr><td colSpan="5" className="p-8 text-center text-slate-400">ไม่พบข้อมูล</td></tr>
                                                         ) : (
                                                             partSearchResults.map((item, idx) => {
-                                                                const sThumb = imgSrcFor(String(item.partNo).trim());
+                                                                const sPartNo = String(item.partNo||"").trim();
+                                                                const sThumb = sPartNo ? imgSrcFor(sPartNo) : "";
                                                                 return (
                                                                 <tr key={idx} className="hover:bg-slate-50">
                                                                     <td className="p-2 text-center">
                                                                         {sThumb ? (
                                                                             <img src={sThumb} alt={item.partNo} loading="lazy"
-                                                                                onClick={() => setLightbox({ partNo: String(item.partNo).trim(), src: imgSrcFor(String(item.partNo).trim(), 1600) })}
+                                                                                onClick={() => setLightbox({ partNo: sPartNo, src: imgSrcFor(sPartNo, 1600) })}
                                                                                 className="w-9 h-9 object-cover rounded border cursor-zoom-in mx-auto" />
                                                                         ) : (
-                                                                            <button onClick={() => pickImageFor(String(item.partNo).trim())} title="อัปโหลดรูป"
+                                                                            <button onClick={() => pickImageFor(sPartNo)} title="อัปโหลดรูป"
                                                                                 className="w-9 h-9 rounded border border-dashed border-slate-300 text-slate-300 hover:text-blue-500 hover:border-blue-400 mx-auto flex items-center justify-center"><i className="fa-solid fa-camera"></i></button>
                                                                         )}
                                                                     </td>
-                                                                    <td className="p-3 cursor-pointer hover:bg-emerald-50" onClick={() => setNamePopup({ partNo: String(item.partNo).trim(), name: String(item.name||"") })} title="กดเพื่อถ่ายรูป / จัดการรูปพาร์ทนี้">
+                                                                    <td className={"p-3 " + (sPartNo ? "cursor-pointer hover:bg-emerald-50" : "")}
+                                                                        onClick={sPartNo ? () => setNamePopup({ partNo: sPartNo, name: String(item.name||"") }) : undefined}
+                                                                        title={sPartNo ? "กดเพื่อถ่ายรูป / จัดการรูปพาร์ทนี้" : undefined}>
                                                                         <div className="font-bold text-blue-600">{item.partNo}</div>
-                                                                        <div className="text-slate-500"><i className="fa-solid fa-camera text-emerald-400 mr-1 text-[10px]"></i>{item.name}</div>
+                                                                        <div className="text-slate-500">{sPartNo && <i className="fa-solid fa-camera text-emerald-400 mr-1 text-[10px]"></i>}{item.name}</div>
                                                                     </td>
                                                                     <td className="p-3 font-bold text-slate-700">{item.model}</td>
                                                                     <td className="p-3 text-right">{formatNum(item.qty)}</td>
