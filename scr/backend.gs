@@ -32,7 +32,10 @@ function getOrCreateImageFolder_() {
   var props = PropertiesService.getScriptProperties();
   var folderId = props.getProperty("BOM_IMAGE_FOLDER_ID");
   if (folderId) {
-    try { return DriveApp.getFolderById(folderId); } catch (err) { /* ถูกลบไป → สร้างใหม่ */ }
+    try {
+      var existing = DriveApp.getFolderById(folderId);
+      if (!existing.isTrashed()) return existing; // ถ้าโดน trash อยู่ ให้สร้างใหม่ ไม่งั้นไฟล์จะไปกองในถังขยะ
+    } catch (err) { /* ถูกลบถาวร → สร้างใหม่ */ }
   }
   var folder = DriveApp.createFolder("WHSYS_BOM_Images");
   props.setProperty("BOM_IMAGE_FOLDER_ID", folder.getId());

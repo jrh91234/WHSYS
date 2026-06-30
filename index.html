@@ -467,10 +467,12 @@
             const [lightbox, setLightbox] = useState(null);          // { partNo, src }
 
             const resizeToJpeg = (file, maxDim = 1280, quality = 0.82) => {
-                return new Promise((resolve) => {
+                return new Promise((resolve, reject) => {
                     const reader = new FileReader();
+                    reader.onerror = () => reject(new Error("อ่านไฟล์รูปไม่สำเร็จ"));
                     reader.onload = (ev) => {
                         const img = new Image();
+                        img.onerror = () => reject(new Error("ไฟล์รูปเสียหายหรือเปิดไม่ได้"));
                         img.onload = () => {
                             let w = img.width, h = img.height;
                             if (w > maxDim || h > maxDim) {
@@ -531,9 +533,25 @@
 
             const handleDeleteImage = async (partNo) => {
                 if (!confirm(`ลบรูปของ ${partNo}?`)) return;
+                const backupImages = { ...partImages };
+                const backupPreviews = { ...localPreviews };
                 if (setPartImages) setPartImages(prev => { const n = { ...prev }; delete n[partNo]; return n; });
                 setLocalPreviews(prev => { const n = { ...prev }; delete n[partNo]; return n; });
-                if (apiUrl) fetch(apiUrl, { method: "POST", mode: "no-cors", body: JSON.stringify({ action: "delete_part_image", partNo }) });
+                if (!apiUrl) return;
+                try {
+                    const res = await fetch(apiUrl, {
+                        method: "POST",
+                        headers: { "Content-Type": "text/plain;charset=utf-8" },
+                        body: JSON.stringify({ action: "delete_part_image", partNo })
+                    });
+                    const json = await res.json();
+                    if (json.status !== "success") throw new Error(json.message || "ลบไม่สำเร็จ");
+                } catch (err) {
+                    // rollback ถ้าฝั่ง server ลบไม่สำเร็จ กันข้อมูลไม่ตรงกัน
+                    if (setPartImages) setPartImages(backupImages);
+                    setLocalPreviews(backupPreviews);
+                    alert("ลบรูปภาพไม่สำเร็จ: " + err.message);
+                }
             };
 
             // หา src ที่จะแสดงของแต่ละ part (รูปที่เพิ่งอัป > รูปจาก Drive)
