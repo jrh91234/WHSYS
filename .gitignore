@@ -1,0 +1,4 @@
+# clasp / Apps Script credentials — ห้าม commit (เป็นความลับ)
+.clasprc.json
+.clasp.json
+node_modules/
