@@ -107,6 +107,34 @@
             XLSX.writeFile(wb, `${fileName}_${new Date().toISOString().slice(0,10)}.xlsx`);
         };
 
+        // Export ตารางเป็น PDF ผ่านหน้าต่าง print ของเบราว์เซอร์ (รองรับภาษาไทยเต็มที่ ไม่ต้องใช้ไลบรารีเพิ่ม)
+        const exportTableToPDF = (title, headers, rows) => {
+            const esc = (s) => String(s ?? "").replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const thead = '<tr>' + headers.map(h => `<th>${esc(h)}</th>`).join('') + '</tr>';
+            const tbody = rows.map(r => '<tr>' + r.map(c => `<td>${esc(c)}</td>`).join('') + '</tr>').join('');
+            const html = `<!DOCTYPE html><html lang="th"><head><meta charset="UTF-8"><title>${esc(title)}</title>
+                <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;700&display=swap" rel="stylesheet">
+                <style>
+                    *{font-family:'Sarabun','TH Sarabun New',sans-serif;box-sizing:border-box;}
+                    body{padding:24px;color:#1e293b;margin:0;}
+                    h2{margin:0 0 4px;font-size:18px;} .sub{color:#64748b;font-size:12px;margin-bottom:16px;}
+                    table{width:100%;border-collapse:collapse;font-size:12px;}
+                    th,td{border:1px solid #cbd5e1;padding:6px 8px;text-align:left;vertical-align:top;}
+                    thead th{background:#f1f5f9;}
+                    tbody tr:nth-child(even) td{background:#f8fafc;}
+                    @media print{@page{margin:12mm;}}
+                </style></head><body>
+                <h2>${esc(title)}</h2>
+                <div class="sub">พิมพ์เมื่อ ${esc(new Date().toLocaleString('th-TH'))} · ${rows.length} รายการ</div>
+                <table><thead>${thead}</thead><tbody>${tbody}</tbody></table>
+                <scr` + `ipt>window.onload=function(){setTimeout(function(){window.print();},300);};</scr` + `ipt>
+                </body></html>`;
+            const w = window.open('', '_blank');
+            if (!w) { alert('เบราว์เซอร์บล็อก popup — กรุณาอนุญาต popup ของเว็บนี้แล้วลองใหม่'); return; }
+            w.document.write(html);
+            w.document.close();
+        };
+
         const Icons = {
             Dashboard: (p) => <i className={`fa-solid fa-chart-line ${p.className}`}></i>,
             Warehouse: (p) => <i className={`fa-solid fa-warehouse ${p.className}`}></i>,
@@ -792,6 +820,37 @@
                 setPartSearchResults(results);
             };
 
+            // --- Export: BOM Compare ---
+            const exportCompareExcel = () => {
+                if (!compResult) return;
+                const data = compResult.rows.map(r => {
+                    const o = { "Part No": r.partNo, "Name": r.name };
+                    compResult.models.forEach((m, i) => { o[m] = r.quantities[i]; });
+                    o["Status"] = r.status;
+                    return o;
+                });
+                exportToExcel(data, "BOM_Compare", "Compare");
+            };
+            const exportComparePDF = () => {
+                if (!compResult) return;
+                const headers = ["Part No", "Name", ...compResult.models, "Status"];
+                const rows = compResult.rows.map(r => [r.partNo, r.name, ...r.quantities.map(q => formatNum(q)), r.status]);
+                exportTableToPDF("BOM Compare: " + compResult.models.join(" vs "), headers, rows);
+            };
+
+            // --- Export: Search Part ---
+            const exportSearchExcel = () => {
+                if (!partSearchResults || partSearchResults.length === 0) return alert("ไม่มีผลการค้นหาให้ export");
+                const data = partSearchResults.map(it => ({ "Part No": it.partNo, "Name": it.name, "Used In (Model)": it.model, "Qty": it.qty, "Type": it.type }));
+                exportToExcel(data, "Part_Search", "Search");
+            };
+            const exportSearchPDF = () => {
+                if (!partSearchResults || partSearchResults.length === 0) return alert("ไม่มีผลการค้นหาให้ export");
+                const headers = ["Part No", "Name", "Used In (Model)", "Qty", "Type"];
+                const rows = partSearchResults.map(it => [it.partNo, it.name, it.model, formatNum(it.qty), it.type]);
+                exportTableToPDF("Part Search: " + (searchPartQuery || ""), headers, rows);
+            };
+
             const requestSort = (key) => {
                 let direction = 'ascending';
                 if (sortConfig.key === key && sortConfig.direction === 'ascending') {
@@ -1020,7 +1079,12 @@
                                     </div>
                                     <button onClick={handleCompare} className="w-full bg-purple-600 text-white py-3 rounded-xl font-bold">Compare</button>
                                     {compResult && (
-                                        <div className="mt-6 overflow-auto border rounded-xl max-h-96">
+                                      <div className="mt-6">
+                                        <div className="flex justify-end gap-2 mb-2">
+                                            <button onClick={exportCompareExcel} className="bg-emerald-600 text-white px-3 py-1.5 rounded-lg font-bold text-xs flex items-center gap-1 hover:bg-emerald-700"><i className="fa-solid fa-file-excel"></i> Excel</button>
+                                            <button onClick={exportComparePDF} className="bg-red-500 text-white px-3 py-1.5 rounded-lg font-bold text-xs flex items-center gap-1 hover:bg-red-600"><i className="fa-solid fa-file-pdf"></i> PDF</button>
+                                        </div>
+                                        <div className="overflow-auto border rounded-xl max-h-96">
                                             <table className="w-full text-xs text-left">
                                                 <thead className="bg-purple-50 sticky top-0">
                                                     <tr><th className="p-3">Part No</th>{compResult.models.map((m,i)=><th key={i} className="p-3 text-right">{m}</th>)}<th className="p-3 text-center">Status</th></tr>
@@ -1036,6 +1100,7 @@
                                                 </tbody>
                                             </table>
                                         </div>
+                                      </div>
                                     )}
                                 </>
                             )}
@@ -1058,8 +1123,14 @@
 
                                     {partSearchResults && (
                                         <div className="overflow-hidden border rounded-xl">
-                                            <div className="bg-orange-50 p-3 text-xs font-bold text-orange-800 border-b">
-                                                ผลการค้นหา: พบ {partSearchResults.length} รายการ
+                                            <div className="bg-orange-50 p-3 text-xs font-bold text-orange-800 border-b flex justify-between items-center gap-2">
+                                                <span>ผลการค้นหา: พบ {partSearchResults.length} รายการ</span>
+                                                {partSearchResults.length > 0 && (
+                                                    <div className="flex gap-2">
+                                                        <button onClick={exportSearchExcel} className="bg-emerald-600 text-white px-3 py-1 rounded-lg font-bold flex items-center gap-1 hover:bg-emerald-700"><i className="fa-solid fa-file-excel"></i> Excel</button>
+                                                        <button onClick={exportSearchPDF} className="bg-red-500 text-white px-3 py-1 rounded-lg font-bold flex items-center gap-1 hover:bg-red-600"><i className="fa-solid fa-file-pdf"></i> PDF</button>
+                                                    </div>
+                                                )}
                                             </div>
                                             <div className="overflow-auto max-h-96">
                                                 <table className="w-full text-xs text-left">
