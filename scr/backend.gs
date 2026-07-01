@@ -76,6 +76,8 @@ function doGet(e) {
       return ContentService.createTextOutput(JSON.stringify({ data: bomData })).setMimeType(ContentService.MimeType.JSON);
     }
 
+    // พาร์ทเดียวกันมีได้หลายรูป/หลายมุม: หลายแถวใน PartImages แชร์ PartNo เดียวกันได้ -> คืนเป็น partNo -> [รูป, ...]
+    // (รูปแรกในลิสต์ = รูปปก/thumbnail หลัก)
     if (action == "getImages") {
       var imgSheet = ss.getSheetByName("PartImages");
       var images = {};
@@ -83,13 +85,15 @@ function doGet(e) {
         var idata = imgSheet.getDataRange().getValues();
         for (var i = 1; i < idata.length; i++) {
           var pNo = String(idata[i][0]).trim();
-          if (pNo) {
-            images[pNo] = {
-              fileId: String(idata[i][1]),
+          var fid = String(idata[i][1] || "");
+          if (pNo && fid) {
+            if (!images[pNo]) images[pNo] = [];
+            images[pNo].push({
+              fileId: fid,
               url: String(idata[i][2]),
               updatedAt: idata[i][3],
               user: idata[i][4]
-            };
+            });
           }
         }
       }
@@ -97,6 +101,7 @@ function doGet(e) {
     }
 
     // ดึงเวกเตอร์รูป (embedding) ของทุกพาร์ท สำหรับค้นหาด้วยรูป — โหลดเฉพาะตอนใช้งานโหมด Visual Search
+    // คืนเป็น partNo -> [{ fileId, embedding }, ...] เพราะพาร์ทเดียวกันมีได้หลายรูป/หลายมุม
     if (action == "getEmbeddings") {
       var embSheet = ss.getSheetByName("PartImages");
       var embeddings = {};
@@ -104,8 +109,12 @@ function doGet(e) {
         var edata = embSheet.getDataRange().getValues();
         for (var ei = 1; ei < edata.length; ei++) {
           var epNo = String(edata[ei][0]).trim();
+          var efid = String(edata[ei][1] || "");
           var evec = edata[ei][5]; // column F = Embedding
-          if (epNo && evec) embeddings[epNo] = String(evec);
+          if (epNo && efid && evec) {
+            if (!embeddings[epNo]) embeddings[epNo] = [];
+            embeddings[epNo].push({ fileId: efid, embedding: String(evec) });
+          }
         }
       }
       return ContentService.createTextOutput(JSON.stringify({ embeddings: embeddings })).setMimeType(ContentService.MimeType.JSON);
@@ -343,7 +352,7 @@ function doPost(e) {
     }
 
     // 3.8 UPLOAD BOM PART IMAGE (อัปโหลดรูปประจำ Part No → Drive → เก็บลิงก์ใน sheet PartImages)
-    // ผูกรูปกับ Part No: part เดียวกันที่อยู่หลายรุ่นจะใช้รูปร่วมกัน อัปครั้งเดียวโชว์ทุกที่
+    // พาร์ทเดียวกันอัปได้หลายรูป/หลายมุม: เพิ่มเป็นแถวใหม่เสมอ ไม่เขียนทับรูปเดิม
     else if (body.action === "upload_part_image") {
       var partNo = String(body.partNo || "").trim();
       if (!partNo) throw new Error("Missing partNo");
@@ -365,38 +374,27 @@ function doPost(e) {
         imgSheet.appendRow(["PartNo", "FileId", "Url", "UpdatedAt", "User", "Embedding"]);
       }
 
-      var idata = imgSheet.getDataRange().getValues();
-      var foundRow = -1, oldId = "";
-      for (var i = 1; i < idata.length; i++) {
-        if (String(idata[i][0]).trim() === partNo) { foundRow = i + 1; oldId = String(idata[i][1]); break; }
-      }
-
       var now = new Date().toISOString();
       var who = body.user || "-";
-      if (foundRow > 0) {
-        if (oldId) { try { DriveApp.getFileById(oldId).setTrashed(true); } catch (delErr) {} }
-        imgSheet.getRange(foundRow, 2).setValue(fileId);
-        imgSheet.getRange(foundRow, 3).setValue(url);
-        imgSheet.getRange(foundRow, 4).setValue(now);
-        imgSheet.getRange(foundRow, 5).setValue(who);
-      } else {
-        imgSheet.appendRow([partNo, fileId, url, now, who]);
-      }
+      imgSheet.appendRow([partNo, fileId, url, now, who]);
 
       return ContentService.createTextOutput(JSON.stringify({
         status: "success", partNo: partNo, fileId: fileId, url: url
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
-    // 3.9 DELETE BOM PART IMAGE
+    // 3.9 DELETE BOM PART IMAGE — ระบุ fileId เพื่อลบรูปที่ต้องการเจาะจง (พาร์ทเดียวกันมีได้หลายรูป)
     else if (body.action === "delete_part_image") {
       var delPartNo = String(body.partNo || "").trim();
+      var delFileId = String(body.fileId || "").trim();
       var imgSheet2 = ss.getSheetByName("PartImages");
       if (imgSheet2) {
         var idata2 = imgSheet2.getDataRange().getValues();
         for (var j = 1; j < idata2.length; j++) {
-          if (String(idata2[j][0]).trim() === delPartNo) {
-            if (idata2[j][1]) { try { DriveApp.getFileById(String(idata2[j][1])).setTrashed(true); } catch (delErr2) {} }
+          var rowFileId = String(idata2[j][1] || "").trim();
+          var matches = delFileId ? (rowFileId === delFileId) : (String(idata2[j][0]).trim() === delPartNo);
+          if (matches) {
+            if (rowFileId) { try { DriveApp.getFileById(rowFileId).setTrashed(true); } catch (delErr2) {} }
             imgSheet2.deleteRow(j + 1);
             break;
           }
@@ -416,20 +414,24 @@ function doPost(e) {
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
-    // 3.11 บันทึกเวกเตอร์รูป (embedding) ของหลายพาร์ทพร้อมกัน ลงคอลัมน์ F ของ PartImages
+    // 3.11 บันทึกเวกเตอร์รูป (embedding) ของหลายรูปพร้อมกัน ลงคอลัมน์ F ของ PartImages
+    // จับคู่ด้วย fileId (ไม่ใช่ partNo) เพราะพาร์ทเดียวกันมีได้หลายแถว/หลายรูป
     else if (body.action === "save_embeddings") {
-      var embItems = body.items || [];
+      var embItems = body.items || []; // [{ partNo, fileId, embedding }]
       var embSh = ss.getSheetByName("PartImages");
       if (!embSh) {
         embSh = ss.insertSheet("PartImages");
         embSh.appendRow(["PartNo", "FileId", "Url", "UpdatedAt", "User", "Embedding"]);
       }
       var embAll = embSh.getDataRange().getValues();
-      var rowOf = {};
-      for (var ri = 1; ri < embAll.length; ri++) { rowOf[String(embAll[ri][0]).trim()] = ri + 1; }
+      var rowOfFileId = {};
+      for (var ri = 1; ri < embAll.length; ri++) {
+        var rfid = String(embAll[ri][1] || "").trim();
+        if (rfid) rowOfFileId[rfid] = ri + 1;
+      }
       var savedCount = 0;
       embItems.forEach(function (it) {
-        var rr = rowOf[String(it.partNo || "").trim()];
+        var rr = rowOfFileId[String(it.fileId || "").trim()];
         if (rr) { embSh.getRange(rr, 6).setValue(String(it.embedding || "")); savedCount++; }
       });
       return ContentService.createTextOutput(JSON.stringify({ status: "success", count: savedCount })).setMimeType(ContentService.MimeType.JSON);

@@ -56,12 +56,12 @@
         // สร้าง URL รูป thumbnail จาก Google Drive fileId (ไฟล์ต้องตั้งแชร์ "ใครมีลิงก์ดูได้")
         const driveThumb = (fileId, size = 400) => fileId ? `https://drive.google.com/thumbnail?id=${fileId}&sz=w${size}` : "";
 
-        // ลิงก์เปิดดูรูปใน Drive (สำหรับใส่ในไฟล์ Excel/PDF ที่ export)
+        // ลิงก์เปิดดูรูปใน Drive (สำหรับใส่ในไฟล์ Excel/PDF ที่ export) — ใช้รูปแรก (cover) ของพาร์ท
         const driveViewLink = (partImages, partNo) => {
-            const fid = partImages[String(partNo || "").trim()]?.fileId;
+            const fid = (partImages[String(partNo || "").trim()] || [])[0]?.fileId;
             return fid ? `https://drive.google.com/file/d/${fid}/view` : "";
         };
-        const partFileId = (partImages, partNo) => partImages[String(partNo || "").trim()]?.fileId || "";
+        const partFileId = (partImages, partNo) => (partImages[String(partNo || "").trim()] || [])[0]?.fileId || "";
 
         // <img> สำหรับรูป Drive ที่ทนต่อการโหลดพร้อมกันหลายรูป (rate-limit):
         // ใช้ lh3.googleusercontent.com เป็นหลัก (เร็ว/โดน throttle น้อย) → ถ้าพลาด fallback ไป
@@ -603,8 +603,9 @@
         };
 
         // ===== ค้นหาด้วยรูป (Visual Search) — แยกออกมาเป็นฟังก์ชันเดี่ยว ไม่ฝังลึกอยู่ใน AdvancedMRPView =====
+        // embeddings: partNo -> [{ fileId, vector }] — พาร์ทเดียวกันมีได้หลายรูป/หลายมุม คะแนนของพาร์ทคือค่าที่ดีที่สุดในบรรดารูปทั้งหมด
         const useVisualSearch = (apiUrl, partImages = {}, partNameMap = {}) => {
-            const [embeddings, setEmbeddings] = useState({});        // partNo -> Float32Array
+            const [embeddings, setEmbeddings] = useState({});
             const [embLoaded, setEmbLoaded] = useState(false);
             const [visualBusy, setVisualBusy] = useState(false);
             const [visualMsg, setVisualMsg] = useState("");
@@ -618,17 +619,28 @@
                     const res = await fetch(apiUrl + "?action=getEmbeddings&t=" + Date.now());
                     const json = await res.json();
                     const out = {};
-                    Object.keys(json.embeddings || {}).forEach(p => { const v = b64ToEmb(json.embeddings[p]); if (v) out[p] = v; });
+                    Object.keys(json.embeddings || {}).forEach(p => {
+                        const list = (json.embeddings[p] || [])
+                            .map(it => { const v = b64ToEmb(it.embedding); return v ? { fileId: it.fileId, vector: v } : null; })
+                            .filter(Boolean);
+                        if (list.length) out[p] = list;
+                    });
                     setEmbeddings(out);
                 } catch (e) { console.log("load embeddings failed", e); }
                 finally { setEmbLoaded(true); }
             }, [apiUrl]);
             useEffect(() => { if (!embLoaded) loadEmbeddings(); }, [embLoaded, loadEmbeddings]);
 
-            // สร้าง/อัปเดตดัชนี: ดึงรูปเดิมจาก Drive (ผ่าน proxy) มาแปลงเป็นเวกเตอร์แล้วบันทึก
+            // สร้าง/อัปเดตดัชนี: ดึงรูปที่ยังไม่มี embedding จาก Drive (ผ่าน proxy) มาแปลงเป็นเวกเตอร์แล้วบันทึก — ทำทีละรูป ไม่ใช่ทีละพาร์ท
             const buildIndex = async () => {
                 if (!apiUrl) return alert("ยังไม่ได้ตั้งค่า API URL");
-                const targets = Object.keys(partImages).filter(p => partImages[p] && partImages[p].fileId && !embeddings[p]);
+                const targets = [];
+                Object.keys(partImages).forEach(p => {
+                    const already = new Set((embeddings[p] || []).map(it => it.fileId));
+                    (partImages[p] || []).forEach(img => {
+                        if (img.fileId && !already.has(img.fileId)) targets.push({ partNo: p, fileId: img.fileId });
+                    });
+                });
                 if (targets.length === 0) return alert("ดัชนีรูปครบแล้ว — ไม่มีรูปใหม่ให้ประมวลผล");
                 setVisualBusy(true); setVisualMsg("กำลังโหลดโมเดล AI (ครั้งแรกอาจนานหน่อย)..."); setIndexProg({ done: 0, total: targets.length });
                 try {
@@ -636,17 +648,17 @@
                     const newEmb = { ...embeddings };
                     const toSave = [];
                     for (let i = 0; i < targets.length; i++) {
-                        const p = targets[i];
+                        const { partNo: p, fileId } = targets[i];
                         setVisualMsg("กำลังประมวลผลรูปพาร์ท..."); setIndexProg({ done: i, total: targets.length });
                         try {
-                            const res = await fetch(apiUrl, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ action: "get_image_b64", fileId: partImages[p].fileId }) });
+                            const res = await fetch(apiUrl, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ action: "get_image_b64", fileId }) });
                             const json = await res.json();
                             if (json.status !== "success" || !json.base64) continue;
                             const img = await dataUrlToImageEl("data:" + (json.mimeType || "image/jpeg") + ";base64," + json.base64);
                             const vec = await embedImageEl(model, img);
-                            newEmb[p] = vec;
-                            toSave.push({ partNo: p, embedding: embToB64(vec) });
-                        } catch (err) { console.log("index fail", p, err); }
+                            newEmb[p] = [...(newEmb[p] || []).filter(it => it.fileId !== fileId), { fileId, vector: vec }];
+                            toSave.push({ partNo: p, fileId, embedding: embToB64(vec) });
+                        } catch (err) { console.log("index fail", p, fileId, err); }
                     }
                     setIndexProg({ done: targets.length, total: targets.length });
                     if (toSave.length) {
@@ -654,7 +666,7 @@
                         await fetch(apiUrl, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ action: "save_embeddings", items: toSave }) });
                     }
                     setEmbeddings(newEmb);
-                    alert("สร้างดัชนีรูปเสร็จ: " + toSave.length + " รายการ");
+                    alert("สร้างดัชนีรูปเสร็จ: " + toSave.length + " รูป");
                 } catch (e) {
                     alert("สร้างดัชนีไม่สำเร็จ: " + e.message);
                 } finally { setVisualBusy(false); setVisualMsg(""); }
@@ -671,7 +683,11 @@
                     const model = await loadVisionModel();
                     const img = await fileToImageEl(file);
                     const q = await embedImageEl(model, img);
-                    const scored = Object.keys(embeddings).map(p => ({ partNo: p, name: partNameMap[p] || "", score: cosineSim(q, embeddings[p]) }));
+                    const scored = Object.keys(embeddings).map(p => ({
+                        partNo: p,
+                        name: partNameMap[p] || "",
+                        score: Math.max(...embeddings[p].map(it => cosineSim(q, it.vector)))
+                    }));
                     scored.sort((a, b) => b.score - a.score);
                     const filtered = scored.filter(r => r.score >= 0.5); // ตัดผลที่ความเหมือนต่ำกว่า 50% ทิ้ง
                     setVisualResults(filtered.slice(0, 12));
@@ -688,12 +704,13 @@
         };
 
         // ===== รูปประจำ Part (เก็บใน Google Drive) — แยกออกมาเป็นฟังก์ชันเดี่ยว ใช้ร่วมกันได้ทุกหน้าที่โชว์รูปพาร์ท =====
+        // partImages: partNo -> [{ fileId, url, updatedAt, user }] — พาร์ทเดียวกันอัปได้หลายรูป/หลายมุม รูปแรกในลิสต์ = รูปปก
         const usePartImageManager = (apiUrl, partImages = {}, setPartImages, currentUser) => {
             const imgFileRef = useRef(null);
             const uploadTargetPart = useRef("");
             const [uploadingPart, setUploadingPart] = useState("");
-            const [localPreviews, setLocalPreviews] = useState({}); // partNo -> dataURL (โชว์ทันทีหลังอัป ระหว่างรอ Drive สร้าง thumbnail)
-            const [lightbox, setLightbox] = useState(null);          // { partNo, src }
+            const [localPreviews, setLocalPreviews] = useState({}); // fileId -> dataURL (โชว์ทันทีหลังอัป ระหว่างรอ Drive สร้าง thumbnail)
+            const [lightbox, setLightbox] = useState(null);          // { partNo, fileId, src }
             const [namePopup, setNamePopup] = useState(null);        // { partNo, name } เมนูเด้งตอนกดชื่อพาร์ท
 
             const resizeToJpeg = (file, maxDim = 1280, quality = 0.82) => {
@@ -734,79 +751,112 @@
                 imgFileRef.current.click();
             };
 
+            // สร้าง embedding ของรูปที่เพิ่งอัปให้อัตโนมัติแล้วบันทึกขึ้น cloud เบื้องหลัง
+            // ไม่ await จากตัวเรียก และไม่โยน error ออกไป กันไม่ให้ค้าง/รบกวน flow อัปโหลดรูปหลัก
+            const autoIndexUpload = async (partNo, fileId, dataUrl) => {
+                if (!apiUrl) return;
+                try {
+                    const model = await loadVisionModel();
+                    const img = await dataUrlToImageEl(dataUrl);
+                    const vec = await embedImageEl(model, img);
+                    await fetch(apiUrl, {
+                        method: "POST",
+                        headers: { "Content-Type": "text/plain;charset=utf-8" },
+                        body: JSON.stringify({ action: "save_embeddings", items: [{ partNo, fileId, embedding: embToB64(vec) }] })
+                    });
+                } catch (err) {
+                    console.log("auto-index (background) failed", partNo, fileId, err);
+                }
+            };
+
+            // รองรับเลือกได้หลายไฟล์พร้อมกัน (จากคลังรูป) — อัปทีละไฟล์ ไฟล์ไหนพังก็ข้ามไปไฟล์ถัดไป
             const handleImageFile = async (e) => {
-                const file = e.target.files[0];
+                const files = Array.from(e.target.files || []);
                 const partNo = uploadTargetPart.current;
                 e.target.value = "";
-                if (!file || !partNo) return;
-                if (!file.type.startsWith('image/')) return alert("กรุณาเลือกไฟล์รูปภาพ");
+                if (!files.length || !partNo) return;
+                const imageFiles = files.filter(f => f.type.startsWith('image/'));
+                if (!imageFiles.length) return alert("กรุณาเลือกไฟล์รูปภาพ");
 
                 setUploadingPart(partNo);
                 try {
-                    const { dataUrl, base64 } = await resizeToJpeg(file);
-                    setLocalPreviews(prev => ({ ...prev, [partNo]: dataUrl })); // โชว์ทันที
+                    for (const file of imageFiles) {
+                        try {
+                            const { dataUrl, base64 } = await resizeToJpeg(file);
+                            const res = await fetch(apiUrl, {
+                                method: "POST",
+                                headers: { "Content-Type": "text/plain;charset=utf-8" },
+                                body: JSON.stringify({ action: "upload_part_image", partNo, imageData: base64, mimeType: "image/jpeg", user: currentUser?.name || "-" })
+                            });
+                            const json = await res.json();
+                            if (json.status !== "success" || !json.fileId) throw new Error(json.message || "อัปโหลดไม่สำเร็จ");
 
-                    const res = await fetch(apiUrl, {
-                        method: "POST",
-                        headers: { "Content-Type": "text/plain;charset=utf-8" },
-                        body: JSON.stringify({ action: "upload_part_image", partNo, imageData: base64, mimeType: "image/jpeg", user: currentUser?.name || "-" })
-                    });
-                    const json = await res.json();
-                    if (json.status !== "success" || !json.fileId) throw new Error(json.message || "อัปโหลดไม่สำเร็จ");
-
-                    if (setPartImages) {
-                        setPartImages(prev => ({ ...prev, [partNo]: { fileId: json.fileId, url: json.url } }));
+                            setLocalPreviews(prev => ({ ...prev, [json.fileId]: dataUrl })); // โชว์ทันทีระหว่างรอ Drive สร้าง thumbnail
+                            if (setPartImages) {
+                                setPartImages(prev => ({
+                                    ...prev,
+                                    [partNo]: [...(prev[partNo] || []), { fileId: json.fileId, url: json.url, updatedAt: new Date().toISOString(), user: currentUser?.name || "-" }]
+                                }));
+                            }
+                            autoIndexUpload(partNo, json.fileId, dataUrl); // สร้างดัชนีให้เองเบื้องหลัง ไม่ต้องรอ ไม่บล็อก UI
+                        } catch (err) {
+                            alert(`อัปโหลดรูปไม่สำเร็จ (${file.name}): ` + err.message);
+                        }
                     }
-                } catch (err) {
-                    setLocalPreviews(prev => { const n = { ...prev }; delete n[partNo]; return n; });
-                    alert("อัปโหลดรูปไม่สำเร็จ: " + err.message);
                 } finally {
                     setUploadingPart("");
                 }
             };
 
-            const handleDeleteImage = async (partNo) => {
-                if (!confirm(`ลบรูปของ ${partNo}?`)) return;
+            const handleDeleteImage = async (partNo, fileId) => {
+                if (!confirm(`ลบรูปนี้ของ ${partNo}?`)) return;
                 const backupImages = { ...partImages };
-                const backupPreviews = { ...localPreviews };
-                if (setPartImages) setPartImages(prev => { const n = { ...prev }; delete n[partNo]; return n; });
-                setLocalPreviews(prev => { const n = { ...prev }; delete n[partNo]; return n; });
+                if (setPartImages) {
+                    setPartImages(prev => ({ ...prev, [partNo]: (prev[partNo] || []).filter(img => img.fileId !== fileId) }));
+                }
+                setLocalPreviews(prev => { const n = { ...prev }; delete n[fileId]; return n; });
                 if (!apiUrl) return;
                 try {
                     const res = await fetch(apiUrl, {
                         method: "POST",
                         headers: { "Content-Type": "text/plain;charset=utf-8" },
-                        body: JSON.stringify({ action: "delete_part_image", partNo })
+                        body: JSON.stringify({ action: "delete_part_image", partNo, fileId })
                     });
                     const json = await res.json();
                     if (json.status !== "success") throw new Error(json.message || "ลบไม่สำเร็จ");
                 } catch (err) {
                     // rollback ถ้าฝั่ง server ลบไม่สำเร็จ กันข้อมูลไม่ตรงกัน
                     if (setPartImages) setPartImages(backupImages);
-                    setLocalPreviews(backupPreviews);
                     alert("ลบรูปภาพไม่สำเร็จ: " + err.message);
                 }
             };
 
-            // หา src ที่จะแสดงของแต่ละ part (รูปที่เพิ่งอัป > รูปจาก Drive)
-            const imgSrcFor = (partNo, size = 400) => {
-                if (localPreviews[partNo]) return localPreviews[partNo];
-                const rec = partImages[partNo];
-                return rec && rec.fileId ? driveThumb(rec.fileId, size) : "";
+            const imagesFor = (partNo) => partImages[partNo] || [];
+
+            // หา src ของรูปเดี่ยว ๆ ตาม fileId (รูปที่เพิ่งอัป > รูปจาก Drive)
+            const imgSrcForFile = (fileId, size = 400) => {
+                if (!fileId) return "";
+                if (localPreviews[fileId]) return localPreviews[fileId];
+                return driveThumb(fileId, size);
             };
+
+            // src ของรูปปก (รูปแรก) ของพาร์ท ใช้โชว์เป็น thumbnail ในตาราง/ผลค้นหา
+            const imgSrcFor = (partNo, size = 400) => imgSrcForFile(imagesFor(partNo)[0]?.fileId, size);
+            const coverFileId = (partNo) => imagesFor(partNo)[0]?.fileId || "";
 
             return {
                 imgFileRef, uploadingPart, lightbox, setLightbox, namePopup, setNamePopup,
-                pickImageFor, handleImageFile, handleDeleteImage, imgSrcFor
+                pickImageFor, handleImageFile, handleDeleteImage,
+                imagesFor, imgSrcFor, imgSrcForFile, coverFileId
             };
         };
 
         // Modal คู่กัน: lightbox ดูรูปเต็มจอ + popup จัดการรูปตอนกดชื่อพาร์ท (ใช้ร่วมกับ usePartImageManager)
-        const ImagePreviewModals = ({ imgFileRef, onFileChange, lightbox, setLightbox, namePopup, setNamePopup, imgSrcFor, pickImageFor, handleDeleteImage }) => {
-            const popHasImg = namePopup ? !!imgSrcFor(namePopup.partNo) : false;
+        const ImagePreviewModals = ({ imgFileRef, onFileChange, lightbox, setLightbox, namePopup, setNamePopup, imagesFor, imgSrcForFile, pickImageFor, handleDeleteImage }) => {
+            const popImages = namePopup ? imagesFor(namePopup.partNo) : [];
             return (
                 <>
-                    <input type="file" ref={imgFileRef} onChange={onFileChange} className="hidden" accept="image/*" />
+                    <input type="file" ref={imgFileRef} onChange={onFileChange} className="hidden" accept="image/*" multiple />
 
                     {lightbox && (
                         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 modal-overlay" onClick={() => setLightbox(null)}>
@@ -814,8 +864,7 @@
                                 <div className="flex justify-between items-center text-white mb-2">
                                     <span className="font-mono font-bold">{lightbox.partNo}</span>
                                     <div className="flex gap-3 items-center">
-                                        <button onClick={() => { const p = lightbox.partNo; setLightbox(null); pickImageFor(p); }} className="text-sm hover:text-blue-300"><i className="fa-solid fa-pen mr-1"></i>เปลี่ยนรูป</button>
-                                        <button onClick={() => { const p = lightbox.partNo; setLightbox(null); handleDeleteImage(p); }} className="text-sm hover:text-red-400"><i className="fa-solid fa-trash-can mr-1"></i>ลบ</button>
+                                        <button onClick={() => { const p = lightbox.partNo, fid = lightbox.fileId; setLightbox(null); handleDeleteImage(p, fid); }} className="text-sm hover:text-red-400"><i className="fa-solid fa-trash-can mr-1"></i>ลบรูปนี้</button>
                                         <button onClick={() => setLightbox(null)} className="text-2xl hover:text-slate-300"><Icons.X/></button>
                                     </div>
                                 </div>
@@ -834,33 +883,32 @@
                                     </div>
                                     <button onClick={() => setNamePopup(null)} className="text-slate-400 hover:text-slate-600 text-xl ml-2"><Icons.X/></button>
                                 </div>
-                                {popHasImg && (
-                                    <img src={imgSrcFor(namePopup.partNo, 1000)} alt={namePopup.partNo}
-                                        className="w-full h-40 object-contain rounded-lg border bg-slate-50 my-3" />
+
+                                {popImages.length > 0 ? (
+                                    <div className="grid grid-cols-4 gap-2 my-3">
+                                        {popImages.map((img, i) => (
+                                            <div key={img.fileId || i} className="relative group">
+                                                <img src={imgSrcForFile(img.fileId, 400)} alt=""
+                                                    onClick={() => setLightbox({ partNo: namePopup.partNo, fileId: img.fileId, src: imgSrcForFile(img.fileId, 1600) })}
+                                                    className="w-full h-16 object-cover rounded-lg border cursor-zoom-in" />
+                                                <button onClick={() => handleDeleteImage(namePopup.partNo, img.fileId)} title="ลบรูปนี้"
+                                                    className="absolute -top-1.5 -right-1.5 bg-red-600 text-white rounded-full w-5 h-5 text-[9px] flex items-center justify-center opacity-0 group-hover:opacity-100 transition"><i className="fa-solid fa-xmark"></i></button>
+                                            </div>
+                                        ))}
+                                    </div>
+                                ) : (
+                                    <div className="text-center text-xs text-slate-400 py-4">ยังไม่มีรูป</div>
                                 )}
-                                <div className="grid grid-cols-2 gap-2 mt-3">
+
+                                <div className="grid grid-cols-2 gap-2 mt-1">
                                     <button onClick={() => { const p = namePopup.partNo; setNamePopup(null); pickImageFor(p, true); }}
                                         className="col-span-2 bg-emerald-600 text-white py-3 rounded-xl font-bold hover:bg-emerald-700 flex items-center justify-center gap-2">
-                                        <i className="fa-solid fa-camera"></i> ถ่ายรูป
+                                        <i className="fa-solid fa-camera"></i> ถ่ายรูปเพิ่ม
                                     </button>
                                     <button onClick={() => { const p = namePopup.partNo; setNamePopup(null); pickImageFor(p, false); }}
-                                        className="bg-slate-100 text-slate-700 py-2.5 rounded-xl font-bold hover:bg-slate-200 flex items-center justify-center gap-2">
-                                        <i className="fa-solid fa-image"></i> เลือกจากเครื่อง
+                                        className="col-span-2 bg-slate-100 text-slate-700 py-2.5 rounded-xl font-bold hover:bg-slate-200 flex items-center justify-center gap-2">
+                                        <i className="fa-solid fa-image"></i> เลือกจากเครื่อง (เลือกได้หลายรูป)
                                     </button>
-                                    {popHasImg ? (
-                                        <button onClick={() => { const p = namePopup.partNo; setNamePopup(null); setLightbox({ partNo: p, src: imgSrcFor(p, 1600) }); }}
-                                            className="bg-slate-100 text-slate-700 py-2.5 rounded-xl font-bold hover:bg-slate-200 flex items-center justify-center gap-2">
-                                            <i className="fa-solid fa-expand"></i> ดูเต็มจอ
-                                        </button>
-                                    ) : (
-                                        <div className="flex items-center justify-center text-xs text-slate-400">ยังไม่มีรูป</div>
-                                    )}
-                                    {popHasImg && (
-                                        <button onClick={() => { const p = namePopup.partNo; setNamePopup(null); handleDeleteImage(p); }}
-                                            className="col-span-2 text-red-500 py-2 rounded-xl font-bold hover:bg-red-50 flex items-center justify-center gap-2">
-                                            <i className="fa-solid fa-trash-can"></i> ลบรูป
-                                        </button>
-                                    )}
                                 </div>
                             </div>
                         </div>
@@ -899,7 +947,8 @@
 
             const {
                 imgFileRef, uploadingPart, lightbox, setLightbox, namePopup, setNamePopup,
-                pickImageFor, handleImageFile, handleDeleteImage, imgSrcFor
+                pickImageFor, handleImageFile, handleDeleteImage,
+                imagesFor, imgSrcFor, imgSrcForFile, coverFileId
             } = usePartImageManager(apiUrl, partImages, setPartImages, currentUser);
 
             const getSimilarity = (s1, s2) => {
@@ -1125,7 +1174,7 @@
                 <div className="animate-fade-in space-y-6">
                     <ImagePreviewModals imgFileRef={imgFileRef} onFileChange={handleImageFile}
                         lightbox={lightbox} setLightbox={setLightbox} namePopup={namePopup} setNamePopup={setNamePopup}
-                        imgSrcFor={imgSrcFor} pickImageFor={pickImageFor} handleDeleteImage={handleDeleteImage} />
+                        imagesFor={imagesFor} imgSrcForFile={imgSrcForFile} pickImageFor={pickImageFor} handleDeleteImage={handleDeleteImage} />
 
                     <div className="flex bg-white p-2 rounded-xl shadow-sm border mb-6">
                         {['1. Setup BOM', '2. Functions', '3. Result'].map((t, i) => (
@@ -1182,11 +1231,11 @@
                                                             : uploadingPart === rowPartNo ? <div className="loader mx-auto" style={{width:18,height:18,borderWidth:2}}></div>
                                                             : thumb ? (
                                                                 <div className="relative group inline-block">
-                                                                    <DriveImg src={thumb} fileId={partImages[rowPartNo]?.fileId} size={400} alt={rowPartNo}
-                                                                        onClick={() => setLightbox({ partNo: rowPartNo, src: imgSrcFor(rowPartNo, 1600) })}
+                                                                    <DriveImg src={thumb} fileId={coverFileId(rowPartNo)} size={400} alt={rowPartNo}
+                                                                        onClick={() => setLightbox({ partNo: rowPartNo, fileId: coverFileId(rowPartNo), src: imgSrcFor(rowPartNo, 1600) })}
                                                                         className="w-10 h-10 object-cover rounded border cursor-zoom-in mx-auto" />
-                                                                    <button onClick={() => pickImageFor(rowPartNo)} title="เปลี่ยนรูป"
-                                                                        className="absolute -top-1 -right-1 bg-blue-600 text-white rounded-full w-4 h-4 text-[8px] opacity-0 group-hover:opacity-100 transition flex items-center justify-center"><i className="fa-solid fa-pen"></i></button>
+                                                                    <button onClick={() => pickImageFor(rowPartNo)} title="เพิ่มรูป"
+                                                                        className="absolute -top-1 -right-1 bg-blue-600 text-white rounded-full w-4 h-4 text-[8px] opacity-0 group-hover:opacity-100 transition flex items-center justify-center"><i className="fa-solid fa-plus"></i></button>
                                                                 </div>
                                                             ) : (
                                                                 <button onClick={() => pickImageFor(rowPartNo)} title="อัปโหลดรูป"
@@ -1478,7 +1527,8 @@
                 usePartSearch(bomData, sheetNames, BOM_COLS);
             const {
                 imgFileRef, lightbox, setLightbox, namePopup, setNamePopup,
-                pickImageFor, handleImageFile, handleDeleteImage, imgSrcFor
+                pickImageFor, handleImageFile, handleDeleteImage,
+                imagesFor, imgSrcFor, imgSrcForFile, coverFileId
             } = usePartImageManager(apiUrl, partImages, setPartImages, currentUser);
 
             const exportSearchExcel = () => {
@@ -1500,7 +1550,7 @@
                 <div className="animate-fade-in space-y-6">
                     <ImagePreviewModals imgFileRef={imgFileRef} onFileChange={handleImageFile}
                         lightbox={lightbox} setLightbox={setLightbox} namePopup={namePopup} setNamePopup={setNamePopup}
-                        imgSrcFor={imgSrcFor} pickImageFor={pickImageFor} handleDeleteImage={handleDeleteImage} />
+                        imagesFor={imagesFor} imgSrcForFile={imgSrcForFile} pickImageFor={pickImageFor} handleDeleteImage={handleDeleteImage} />
 
                     <div className="bg-white p-6 rounded-2xl shadow-sm border">
                         <h3 className="font-bold mb-6 flex items-center gap-2"><Icons.Search/> ค้นหาพาร์ท</h3>
@@ -1552,8 +1602,8 @@
                                                     <tr key={idx} className="hover:bg-slate-50">
                                                         <td className="p-2 text-center">
                                                             {sThumb ? (
-                                                                <DriveImg src={sThumb} fileId={partImages[sPartNo]?.fileId} size={400} alt={item.partNo}
-                                                                    onClick={() => setLightbox({ partNo: sPartNo, src: imgSrcFor(sPartNo, 1600) })}
+                                                                <DriveImg src={sThumb} fileId={coverFileId(sPartNo)} size={400} alt={item.partNo}
+                                                                    onClick={() => setLightbox({ partNo: sPartNo, fileId: coverFileId(sPartNo), src: imgSrcFor(sPartNo, 1600) })}
                                                                     className="w-9 h-9 object-cover rounded border cursor-zoom-in mx-auto" />
                                                             ) : (
                                                                 <button onClick={() => pickImageFor(sPartNo)} title="อัปโหลดรูป"
@@ -1616,14 +1666,15 @@
 
             const {
                 imgFileRef, lightbox, setLightbox, namePopup, setNamePopup,
-                pickImageFor, handleImageFile, handleDeleteImage, imgSrcFor
+                pickImageFor, handleImageFile, handleDeleteImage,
+                imagesFor, imgSrcFor, imgSrcForFile, coverFileId
             } = usePartImageManager(apiUrl, partImages, setPartImages, currentUser);
 
             return (
                 <div className="animate-fade-in space-y-6">
                     <ImagePreviewModals imgFileRef={imgFileRef} onFileChange={handleImageFile}
                         lightbox={lightbox} setLightbox={setLightbox} namePopup={namePopup} setNamePopup={setNamePopup}
-                        imgSrcFor={imgSrcFor} pickImageFor={pickImageFor} handleDeleteImage={handleDeleteImage} />
+                        imagesFor={imagesFor} imgSrcForFile={imgSrcForFile} pickImageFor={pickImageFor} handleDeleteImage={handleDeleteImage} />
 
                     <div className="bg-white p-6 rounded-2xl shadow-sm border space-y-4">
                         <h3 className="font-bold flex items-center gap-2"><Icons.Camera/> ค้นหาด้วยรูป</h3>
@@ -1631,7 +1682,7 @@
                         <input type="file" ref={imgSearchRef} onChange={handleQueryImage} className="hidden" accept="image/*" capture="environment" />
                         <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4 text-xs text-indigo-800 flex items-start gap-2">
                             <i className="fa-solid fa-circle-info mt-0.5"></i>
-                            <span>ถ่ายรูปพาร์ทเพื่อค้นหาจากความเหมือนของรูป — ต้องกด "สร้างดัชนีรูป" ก่อนอย่างน้อย 1 ครั้ง (ประมวลผลด้วย AI ในเครื่องคุณเอง ไม่ส่งรูปออกไปไหน)</span>
+                            <span>ถ่ายรูปพาร์ทเพื่อค้นหาจากความเหมือนของรูป — รูปที่อัปใหม่จะถูกสร้างดัชนีให้อัตโนมัติ ส่วนรูปเก่าที่ยังไม่มีดัชนี กดปุ่ม "สร้าง/อัปเดตดัชนีรูป" เพื่อประมวลผลย้อนหลัง (ประมวลผลด้วย AI ในเครื่องคุณเอง ไม่ส่งรูปออกไปไหน)</span>
                         </div>
                         <div className="flex flex-wrap gap-2 items-center">
                             <button onClick={()=>imgSearchRef.current && imgSearchRef.current.click()} disabled={visualBusy} className="bg-indigo-600 text-white px-5 py-3 rounded-xl font-bold flex items-center gap-2 disabled:opacity-50 hover:bg-indigo-700">
@@ -1640,7 +1691,10 @@
                             <button onClick={buildIndex} disabled={visualBusy} className="bg-white border px-4 py-3 rounded-xl font-bold text-slate-600 flex items-center gap-2 disabled:opacity-50 hover:bg-slate-50">
                                 <i className="fa-solid fa-database"></i> สร้าง/อัปเดตดัชนีรูป
                             </button>
-                            <span className="text-xs text-slate-500">มีรูป {Object.keys(partImages).length} · ทำดัชนีแล้ว {Object.keys(embeddings).length}</span>
+                            <span className="text-xs text-slate-500">
+                                มีรูป {Object.values(partImages).reduce((s, arr) => s + (arr?.length || 0), 0)} ภาพ ({Object.keys(partImages).length} พาร์ท)
+                                {" "}· ทำดัชนีแล้ว {Object.values(embeddings).reduce((s, arr) => s + (arr?.length || 0), 0)} ภาพ ({Object.keys(embeddings).length} พาร์ท)
+                            </span>
                         </div>
                         {visualBusy && (
                             <div className="text-sm text-slate-600 flex items-center gap-2">
@@ -1661,9 +1715,9 @@
                                         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
                                             {visualResults.map((r,i)=>(
                                                 <div key={i} className="border rounded-xl p-2 hover:shadow-md transition">
-                                                    {partImages[r.partNo]?.fileId ? (
-                                                        <DriveImg src={imgSrcFor(r.partNo)} fileId={partImages[r.partNo]?.fileId} size={400}
-                                                            onClick={()=>setLightbox({partNo:r.partNo, src: imgSrcFor(r.partNo,1600)})}
+                                                    {coverFileId(r.partNo) ? (
+                                                        <DriveImg src={imgSrcFor(r.partNo)} fileId={coverFileId(r.partNo)} size={400}
+                                                            onClick={()=>setLightbox({partNo:r.partNo, fileId: coverFileId(r.partNo), src: imgSrcFor(r.partNo,1600)})}
                                                             className="w-full h-24 object-cover rounded-lg border mb-2 cursor-zoom-in" />
                                                     ) : <div className="w-full h-24 rounded-lg border mb-2 bg-slate-50"></div>}
                                                     <div className="font-mono font-bold text-blue-600 text-xs truncate">{r.partNo}</div>
@@ -1740,74 +1794,11 @@
             const [isModalOpen, setIsModalOpen] = useState(false);
             const fileInputRef = useRef(null);
 
-            // --- รูปประจำ Part (เก็บใน Google Drive) ---
-            const imgFileRef = useRef(null);
-            const uploadTargetPart = useRef("");
-            const [uploadingPart, setUploadingPart] = useState("");
-            const [localPreviews, setLocalPreviews] = useState({});
-            const [lightbox, setLightbox] = useState(null); // { partNo, src }
-
-            const resizeToJpeg = (file, maxDim = 1280, quality = 0.82) => new Promise((resolve, reject) => {
-                const reader = new FileReader();
-                reader.onerror = () => reject(new Error("อ่านไฟล์รูปไม่สำเร็จ"));
-                reader.onload = (ev) => {
-                    const img = new Image();
-                    img.onerror = () => reject(new Error("ไฟล์รูปเสียหายหรือเปิดไม่ได้"));
-                    img.onload = () => {
-                        let w = img.width, h = img.height;
-                        if (w > maxDim || h > maxDim) { const r = Math.min(maxDim / w, maxDim / h); w = Math.round(w * r); h = Math.round(h * r); }
-                        const canvas = document.createElement('canvas');
-                        canvas.width = w; canvas.height = h;
-                        const ctx = canvas.getContext('2d');
-                        ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, w, h);
-                        ctx.drawImage(img, 0, 0, w, h);
-                        const dataUrl = canvas.toDataURL('image/jpeg', quality);
-                        resolve({ dataUrl, base64: dataUrl.split(',')[1] });
-                    };
-                    img.src = ev.target.result;
-                };
-                reader.readAsDataURL(file);
-            });
-
-            const imgSrcFor = (partNo, size = 400) => {
-                if (localPreviews[partNo]) return localPreviews[partNo];
-                const rec = partImages[partNo];
-                return rec && rec.fileId ? driveThumb(rec.fileId, size) : "";
-            };
-
-            const pickImageFor = (partNo, useCamera = false) => {
-                if (!partNo) return;
-                if (!apiUrl) return alert("กรุณาตั้งค่า API URL ก่อนอัปโหลดรูป");
-                if (!imgFileRef.current) return;
-                uploadTargetPart.current = partNo;
-                if (useCamera) imgFileRef.current.setAttribute('capture', 'environment');
-                else imgFileRef.current.removeAttribute('capture');
-                imgFileRef.current.click();
-            };
-
-            const handleImageFile = async (e) => {
-                const file = e.target.files[0];
-                const partNo = uploadTargetPart.current;
-                e.target.value = "";
-                if (!file || !partNo) return;
-                if (!file.type.startsWith('image/')) return alert("กรุณาเลือกไฟล์รูปภาพ");
-                setUploadingPart(partNo);
-                try {
-                    const { dataUrl, base64 } = await resizeToJpeg(file);
-                    setLocalPreviews(prev => ({ ...prev, [partNo]: dataUrl }));
-                    const res = await fetch(apiUrl, {
-                        method: "POST",
-                        headers: { "Content-Type": "text/plain;charset=utf-8" },
-                        body: JSON.stringify({ action: "upload_part_image", partNo, imageData: base64, mimeType: "image/jpeg", user: currentUser?.name || "-" })
-                    });
-                    const json = await res.json();
-                    if (json.status !== "success" || !json.fileId) throw new Error(json.message || "อัปโหลดไม่สำเร็จ");
-                    if (setPartImages) setPartImages(prev => ({ ...prev, [partNo]: { fileId: json.fileId, url: json.url } }));
-                } catch (err) {
-                    setLocalPreviews(prev => { const n = { ...prev }; delete n[partNo]; return n; });
-                    alert("อัปโหลดรูปไม่สำเร็จ: " + err.message);
-                } finally { setUploadingPart(""); }
-            };
+            const {
+                imgFileRef, uploadingPart, lightbox, setLightbox, namePopup, setNamePopup,
+                pickImageFor, handleImageFile, handleDeleteImage,
+                imagesFor, imgSrcFor, imgSrcForFile, coverFileId
+            } = usePartImageManager(apiUrl, partImages, setPartImages, currentUser);
 
             const handleDownloadTemplate = () => {
                 const templateData = [
@@ -1983,22 +1974,9 @@
 
             return (
                 <div className="animate-fade-in space-y-6">
-                    <input type="file" ref={imgFileRef} onChange={handleImageFile} className="hidden" accept="image/*" />
-
-                    {lightbox && (
-                        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 modal-overlay" onClick={() => setLightbox(null)}>
-                            <div className="relative max-w-3xl w-full" onClick={e => e.stopPropagation()}>
-                                <div className="flex justify-between items-center text-white mb-2">
-                                    <span className="font-mono font-bold">{lightbox.partNo}</span>
-                                    <div className="flex gap-3 items-center">
-                                        <button onClick={() => { const p = lightbox.partNo; setLightbox(null); pickImageFor(p, true); }} className="text-sm hover:text-blue-300"><i className="fa-solid fa-pen mr-1"></i>เปลี่ยนรูป</button>
-                                        <button onClick={() => setLightbox(null)} className="text-2xl hover:text-slate-300"><i className="fa-solid fa-xmark"></i></button>
-                                    </div>
-                                </div>
-                                <img src={lightbox.src} alt={lightbox.partNo} className="w-full max-h-[80vh] object-contain rounded-lg bg-white" />
-                            </div>
-                        </div>
-                    )}
+                    <ImagePreviewModals imgFileRef={imgFileRef} onFileChange={handleImageFile}
+                        lightbox={lightbox} setLightbox={setLightbox} namePopup={namePopup} setNamePopup={setNamePopup}
+                        imagesFor={imagesFor} imgSrcForFile={imgSrcForFile} pickImageFor={pickImageFor} handleDeleteImage={handleDeleteImage} />
 
                     <div className="flex flex-col md:flex-row justify-between items-center gap-4 bg-white p-4 rounded-xl shadow-sm border">
                         <div className="flex gap-2 w-full md:w-auto">
@@ -2064,8 +2042,8 @@
                                                         {!pNo ? <span className="text-slate-200">-</span>
                                                         : uploadingPart === pNo ? <div className="loader mx-auto" style={{width:18,height:18,borderWidth:2}}></div>
                                                         : thumb ? (
-                                                            <DriveImg src={thumb} fileId={partImages[pNo]?.fileId} size={400} alt={pNo}
-                                                                onClick={() => setLightbox({ partNo: pNo, src: imgSrcFor(pNo, 1600) })}
+                                                            <DriveImg src={thumb} fileId={coverFileId(pNo)} size={400} alt={pNo}
+                                                                onClick={() => setNamePopup({ partNo: pNo, name: String(item.name || "") })}
                                                                 className="w-11 h-11 object-cover rounded border cursor-zoom-in mx-auto" />
                                                         ) : (
                                                             <button onClick={() => pickImageFor(pNo, true)} title="ถ่ายรูป / อัปโหลดรูป"
