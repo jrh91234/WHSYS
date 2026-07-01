@@ -473,6 +473,37 @@ function doPost(e) {
       return ContentService.createTextOutput(JSON.stringify({ status: "success" })).setMimeType(ContentService.MimeType.JSON);
     }
 
+    // 3.13 ลบ "ตัวอย่างลบ" 1 รายการที่ระบุ (เช่น ตอนกด "เลิกทำ" ทันทีหลังกด "ไม่ใช่" ผิด)
+    // จับคู่ด้วย partNo + embedding เพราะแถวนี้ไม่มี id เฉพาะ — ลบแถวล่าสุดที่ตรงกันก่อน
+    else if (body.action === "delete_negative_example") {
+      var delNegPartNo = String(body.partNo || "").trim();
+      var delNegEmbedding = String(body.embedding || "");
+      var negSh3 = ss.getSheetByName("NegativeExamples");
+      if (negSh3 && delNegPartNo && delNegEmbedding) {
+        var ndata3 = negSh3.getDataRange().getValues();
+        for (var nk = ndata3.length - 1; nk >= 1; nk--) {
+          if (String(ndata3[nk][0]).trim() === delNegPartNo && String(ndata3[nk][1]) === delNegEmbedding) {
+            negSh3.deleteRow(nk + 1);
+            break;
+          }
+        }
+      }
+      return ContentService.createTextOutput(JSON.stringify({ status: "success" })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // 3.14 ล้าง "ตัวอย่างลบ" ทั้งหมดของพาร์ทหนึ่ง ๆ (เครื่องมือแอดมินไว้เคลียร์ของที่กดพลาดไปแล้วในอดีต)
+    else if (body.action === "clear_negative_examples") {
+      var clrPartNo = String(body.partNo || "").trim();
+      var negSh4 = ss.getSheetByName("NegativeExamples");
+      if (negSh4 && clrPartNo) {
+        var ndata4 = negSh4.getDataRange().getValues();
+        for (var nl = ndata4.length - 1; nl >= 1; nl--) {
+          if (String(ndata4[nl][0]).trim() === clrPartNo) negSh4.deleteRow(nl + 1);
+        }
+      }
+      return ContentService.createTextOutput(JSON.stringify({ status: "success" })).setMimeType(ContentService.MimeType.JSON);
+    }
+
     // 4. DELETE ITEM
     else if (body.action === "delete_item") {
        var data = invSheet.getDataRange().getValues();
