@@ -110,8 +110,16 @@
         // Export ตารางเป็น PDF ผ่านหน้าต่าง print ของเบราว์เซอร์ (รองรับภาษาไทยเต็มที่ ไม่ต้องใช้ไลบรารีเพิ่ม)
         const exportTableToPDF = (title, headers, rows) => {
             const esc = (s) => String(s ?? "").replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            // cell ที่เป็น { imgId: fileId } จะแสดงเป็นรูป (ลอง lh3 ก่อน ถ้าพลาด fallback ไป drive thumbnail)
+            const cellHtml = (c) => {
+                if (c && typeof c === 'object' && c.imgId) {
+                    const id = esc(c.imgId);
+                    return `<img src="https://lh3.googleusercontent.com/d/${id}=w200" referrerpolicy="no-referrer" onerror="this.onerror=null;this.src='https://drive.google.com/thumbnail?id=${id}&sz=w200';" style="width:56px;height:56px;object-fit:contain;border:1px solid #e2e8f0;border-radius:4px;">`;
+                }
+                return esc(c);
+            };
             const thead = '<tr>' + headers.map(h => `<th>${esc(h)}</th>`).join('') + '</tr>';
-            const tbody = rows.map(r => '<tr>' + r.map(c => `<td>${esc(c)}</td>`).join('') + '</tr>').join('');
+            const tbody = rows.map(r => '<tr>' + r.map(c => `<td>${cellHtml(c)}</td>`).join('') + '</tr>').join('');
             const html = `<!DOCTYPE html><html lang="th"><head><meta charset="UTF-8"><title>${esc(title)}</title>
                 <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;700&display=swap" rel="stylesheet">
                 <style>
@@ -820,6 +828,13 @@
                 setPartSearchResults(results);
             };
 
+            // ลิงก์เปิดดูรูปใน Drive (สำหรับใส่ในไฟล์ Excel)
+            const driveViewLink = (partNo) => {
+                const fid = partImages[String(partNo || "").trim()]?.fileId;
+                return fid ? `https://drive.google.com/file/d/${fid}/view` : "";
+            };
+            const partFileId = (partNo) => partImages[String(partNo || "").trim()]?.fileId || "";
+
             // --- Export: BOM Compare ---
             const exportCompareExcel = () => {
                 if (!compResult) return;
@@ -827,27 +842,34 @@
                     const o = { "Part No": r.partNo, "Name": r.name };
                     compResult.models.forEach((m, i) => { o[m] = r.quantities[i]; });
                     o["Status"] = r.status;
+                    o["รูป (ลิงก์)"] = driveViewLink(r.partNo);
                     return o;
                 });
                 exportToExcel(data, "BOM_Compare", "Compare");
             };
             const exportComparePDF = () => {
                 if (!compResult) return;
-                const headers = ["Part No", "Name", ...compResult.models, "Status"];
-                const rows = compResult.rows.map(r => [r.partNo, r.name, ...r.quantities.map(q => formatNum(q)), r.status]);
+                const headers = ["รูป", "Part No", "Name", ...compResult.models, "Status"];
+                const rows = compResult.rows.map(r => {
+                    const fid = partFileId(r.partNo);
+                    return [fid ? { imgId: fid } : "", r.partNo, r.name, ...r.quantities.map(q => formatNum(q)), r.status];
+                });
                 exportTableToPDF("BOM Compare: " + compResult.models.join(" vs "), headers, rows);
             };
 
             // --- Export: Search Part ---
             const exportSearchExcel = () => {
                 if (!partSearchResults || partSearchResults.length === 0) return alert("ไม่มีผลการค้นหาให้ export");
-                const data = partSearchResults.map(it => ({ "Part No": it.partNo, "Name": it.name, "Used In (Model)": it.model, "Qty": it.qty, "Type": it.type }));
+                const data = partSearchResults.map(it => ({ "Part No": it.partNo, "Name": it.name, "Used In (Model)": it.model, "Qty": it.qty, "Type": it.type, "รูป (ลิงก์)": driveViewLink(it.partNo) }));
                 exportToExcel(data, "Part_Search", "Search");
             };
             const exportSearchPDF = () => {
                 if (!partSearchResults || partSearchResults.length === 0) return alert("ไม่มีผลการค้นหาให้ export");
-                const headers = ["Part No", "Name", "Used In (Model)", "Qty", "Type"];
-                const rows = partSearchResults.map(it => [it.partNo, it.name, it.model, formatNum(it.qty), it.type]);
+                const headers = ["รูป", "Part No", "Name", "Used In (Model)", "Qty", "Type"];
+                const rows = partSearchResults.map(it => {
+                    const fid = partFileId(it.partNo);
+                    return [fid ? { imgId: fid } : "", it.partNo, it.name, it.model, formatNum(it.qty), it.type];
+                });
                 exportTableToPDF("Part Search: " + (searchPartQuery || ""), headers, rows);
             };
 
