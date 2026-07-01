@@ -604,21 +604,28 @@
 
         // ===== ค้นหาด้วยรูป (Visual Search) — แยกออกมาเป็นฟังก์ชันเดี่ยว ไม่ฝังลึกอยู่ใน AdvancedMRPView =====
         // embeddings: partNo -> [{ fileId, vector }] — พาร์ทเดียวกันมีได้หลายรูป/หลายมุม คะแนนของพาร์ทคือค่าที่ดีที่สุดในบรรดารูปทั้งหมด
+        const NEG_EXAMPLE_PENALTY_WEIGHT = 0.6; // ทุก ๆ 1 หน่วยความคล้ายกับ "ตัวอย่างลบ" จะหักคะแนนพาร์ทนั้น 0.6 หน่วย
+
         const useVisualSearch = (apiUrl, partImages = {}, partNameMap = {}) => {
             const [embeddings, setEmbeddings] = useState({});
+            const [negatives, setNegatives] = useState({}); // partNo -> [Float32Array, ...] ตัวอย่างที่เคยถูกปฏิเสธว่า "ไม่ใช่พาร์ทนี้"
             const [embLoaded, setEmbLoaded] = useState(false);
             const [visualBusy, setVisualBusy] = useState(false);
             const [visualMsg, setVisualMsg] = useState("");
             const [indexProg, setIndexProg] = useState({ done: 0, total: 0 });
             const [queryPreview, setQueryPreview] = useState("");
             const [queryFile, setQueryFile] = useState(null); // ไฟล์รูปที่ใช้ค้นหาล่าสุด — เก็บไว้เผื่อ user ยืนยันแล้วอยากบันทึกเป็นรูปของพาร์ทนั้นเลย
+            const [queryEmbedding, setQueryEmbedding] = useState(null); // เวกเตอร์ของรูปที่ค้นหาล่าสุด — ใช้ตอนกด "ไม่ใช่พาร์ทนี้" โดยไม่ต้องคำนวณซ้ำ
             const [visualResults, setVisualResults] = useState(null);
 
             const loadEmbeddings = React.useCallback(async () => {
                 if (!apiUrl) { setEmbLoaded(true); return; }
                 try {
-                    const res = await fetch(apiUrl + "?action=getEmbeddings&t=" + Date.now());
-                    const json = await res.json();
+                    const [embRes, negRes] = await Promise.all([
+                        fetch(apiUrl + "?action=getEmbeddings&t=" + Date.now()),
+                        fetch(apiUrl + "?action=getNegativeExamples&t=" + Date.now())
+                    ]);
+                    const json = await embRes.json();
                     const out = {};
                     Object.keys(json.embeddings || {}).forEach(p => {
                         const list = (json.embeddings[p] || [])
@@ -627,6 +634,14 @@
                         if (list.length) out[p] = list;
                     });
                     setEmbeddings(out);
+
+                    const negJson = await negRes.json();
+                    const negOut = {};
+                    Object.keys(negJson.negatives || {}).forEach(p => {
+                        const list = (negJson.negatives[p] || []).map(b64ToEmb).filter(Boolean);
+                        if (list.length) negOut[p] = list;
+                    });
+                    setNegatives(negOut);
                 } catch (e) { console.log("load embeddings failed", e); }
                 finally { setEmbLoaded(true); }
             }, [apiUrl]);
@@ -677,30 +692,44 @@
                 const file = e.target.files[0]; e.target.value = "";
                 if (!file) return;
                 if (Object.keys(embeddings).length === 0) return alert("ยังไม่มีดัชนีรูป — กดปุ่ม 'สร้าง/อัปเดตดัชนีรูป' ก่อน");
-                setVisualBusy(true); setVisualMsg("กำลังวิเคราะห์รูป..."); setVisualResults(null); setQueryFile(file);
+                setVisualBusy(true); setVisualMsg("กำลังวิเคราะห์รูป..."); setVisualResults(null); setQueryFile(file); setQueryEmbedding(null);
                 try {
                     const dataUrl = await new Promise((res) => { const r = new FileReader(); r.onload = ev => res(ev.target.result); r.readAsDataURL(file); });
                     setQueryPreview(dataUrl);
                     const model = await loadVisionModel();
                     const img = await fileToImageEl(file);
                     const q = await embedImageEl(model, img);
-                    const scored = Object.keys(embeddings).map(p => ({
-                        partNo: p,
-                        name: partNameMap[p] || "",
-                        score: Math.max(...embeddings[p].map(it => cosineSim(q, it.vector)))
-                    }));
+                    setQueryEmbedding(q);
+                    const scored = Object.keys(embeddings).map(p => {
+                        const posScore = Math.max(...embeddings[p].map(it => cosineSim(q, it.vector)));
+                        const negPenalty = negatives[p] ? Math.max(0, ...negatives[p].map(v => cosineSim(q, v))) : 0;
+                        return { partNo: p, name: partNameMap[p] || "", score: posScore - negPenalty * NEG_EXAMPLE_PENALTY_WEIGHT };
+                    });
                     scored.sort((a, b) => b.score - a.score);
-                    const filtered = scored.filter(r => r.score >= 0.5); // ตัดผลที่ความเหมือนต่ำกว่า 50% ทิ้ง
+                    const filtered = scored.filter(r => r.score >= 0.5); // ตัดผลที่ความเหมือนต่ำกว่า 50% ทิ้ง (หลังหักคะแนนตัวอย่างลบแล้ว)
                     setVisualResults(filtered.slice(0, 12));
                 } catch (err) {
                     alert("ค้นหาด้วยรูปไม่สำเร็จ: " + err.message);
                 } finally { setVisualBusy(false); setVisualMsg(""); }
             };
 
+            // ยืนยันว่ารูปที่ค้นหา "ไม่ใช่" พาร์ทนี้ -> เก็บเวกเตอร์ไว้เป็นตัวอย่างลบ เพื่อลดคะแนนพาร์ทนี้ในการค้นหาครั้งถัดไปถ้าเจอรูปคล้ายกันอีก
+            const rejectMatch = async (partNo) => {
+                if (!queryEmbedding) return;
+                const embedding = embToB64(queryEmbedding);
+                setNegatives(prev => ({ ...prev, [partNo]: [...(prev[partNo] || []), queryEmbedding] }));
+                if (!apiUrl) return;
+                await fetch(apiUrl, {
+                    method: "POST",
+                    headers: { "Content-Type": "text/plain;charset=utf-8" },
+                    body: JSON.stringify({ action: "save_negative_example", partNo, embedding })
+                });
+            };
+
             return {
                 embeddings, embLoaded, visualBusy, visualMsg, indexProg,
-                queryPreview, setQueryPreview, queryFile, visualResults, setVisualResults,
-                buildIndex, handleQueryImage
+                queryPreview, setQueryPreview, queryFile, queryEmbedding, visualResults, setVisualResults,
+                buildIndex, handleQueryImage, rejectMatch
             };
         };
 
@@ -1666,7 +1695,7 @@
             const {
                 embeddings, visualBusy, visualMsg, indexProg,
                 queryPreview, queryFile, visualResults,
-                buildIndex, handleQueryImage
+                buildIndex, handleQueryImage, rejectMatch
             } = useVisualSearch(apiUrl, partImages, partNameMap);
 
             const {
@@ -1675,21 +1704,35 @@
                 imagesFor, imgSrcFor, imgSrcForFile, coverFileId
             } = usePartImageManager(apiUrl, partImages, setPartImages, currentUser);
 
-            const [confirming, setConfirming] = useState(false);
-            const [confirmedFor, setConfirmedFor] = useState("");
+            const [submittingFeedback, setSubmittingFeedback] = useState(false);
+            const [feedbackFor, setFeedbackFor] = useState({}); // partNo -> 'yes' | 'no'
 
             // ยืนยันว่ารูปที่ค้นหาคือพาร์ทนี้จริง -> บันทึกรูปนั้นเป็นรูปของพาร์ทเพิ่มอีก 1 รูป
             // แล้วสร้างดัชนีให้อัตโนมัติ (เหมือนอัปโหลดรูปปกติ) เพื่อให้ค้นหาครั้งถัดไปแม่นขึ้น
             const handleConfirmMatch = async (partNo) => {
-                if (!queryFile || confirming) return;
-                setConfirming(true);
+                if (!queryFile || submittingFeedback) return;
+                setSubmittingFeedback(true);
                 try {
                     await uploadOneImage(partNo, queryFile);
-                    setConfirmedFor(partNo);
+                    setFeedbackFor(prev => ({ ...prev, [partNo]: 'yes' }));
                 } catch (err) {
                     alert("บันทึกรูปไม่สำเร็จ: " + err.message);
                 } finally {
-                    setConfirming(false);
+                    setSubmittingFeedback(false);
+                }
+            };
+
+            // ยืนยันว่ารูปที่ค้นหา "ไม่ใช่" พาร์ทนี้ -> เก็บไว้เป็นตัวอย่างลบ กันไม่ให้พาร์ทนี้ขึ้นมาสับสนซ้ำอีกในการค้นหาครั้งถัดไป
+            const handleRejectMatch = async (partNo) => {
+                if (submittingFeedback) return;
+                setSubmittingFeedback(true);
+                try {
+                    await rejectMatch(partNo);
+                    setFeedbackFor(prev => ({ ...prev, [partNo]: 'no' }));
+                } catch (err) {
+                    alert("บันทึกไม่สำเร็จ: " + err.message);
+                } finally {
+                    setSubmittingFeedback(false);
                 }
             };
 
@@ -1702,10 +1745,10 @@
                     <div className="bg-white p-6 rounded-2xl shadow-sm border space-y-4">
                         <h3 className="font-bold flex items-center gap-2"><Icons.Camera/> ค้นหาด้วยรูป</h3>
 
-                        <input type="file" ref={imgSearchRef} onChange={(e) => { setConfirmedFor(""); handleQueryImage(e); }} className="hidden" accept="image/*" capture="environment" />
+                        <input type="file" ref={imgSearchRef} onChange={(e) => { setFeedbackFor({}); handleQueryImage(e); }} className="hidden" accept="image/*" capture="environment" />
                         <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4 text-xs text-indigo-800 flex items-start gap-2">
                             <i className="fa-solid fa-circle-info mt-0.5"></i>
-                            <span>ถ่ายรูปพาร์ทเพื่อค้นหาจากความเหมือนของรูป — รูปที่อัปใหม่จะถูกสร้างดัชนีให้อัตโนมัติ ส่วนรูปเก่าที่ยังไม่มีดัชนี กดปุ่ม "สร้าง/อัปเดตดัชนีรูป" เพื่อประมวลผลย้อนหลัง (ประมวลผลด้วย AI ในเครื่องคุณเอง ไม่ส่งรูปออกไปไหน) — เจอผลลัพธ์ที่ใช่แล้วกด "ใช่พาร์ทนี้" เพื่อบันทึกรูปนั้นไว้ฝึกระบบให้แม่นขึ้นในครั้งถัดไป</span>
+                            <span>ถ่ายรูปพาร์ทเพื่อค้นหาจากความเหมือนของรูป — รูปที่อัปใหม่จะถูกสร้างดัชนีให้อัตโนมัติ ส่วนรูปเก่าที่ยังไม่มีดัชนี กดปุ่ม "สร้าง/อัปเดตดัชนีรูป" เพื่อประมวลผลย้อนหลัง (ประมวลผลด้วย AI ในเครื่องคุณเอง ไม่ส่งรูปออกไปไหน) — เจอผลลัพธ์ที่ใช่แล้วกด "ใช่" เพื่อฝึกระบบให้แม่นขึ้น หรือกด "ไม่ใช่" ถ้าผลลัพธ์ผิด เพื่อกันไม่ให้พาร์ทนั้นขึ้นมาสับสนซ้ำอีก</span>
                         </div>
                         <div className="flex flex-wrap gap-2 items-center">
                             <button onClick={()=>imgSearchRef.current && imgSearchRef.current.click()} disabled={visualBusy} className="bg-indigo-600 text-white px-5 py-3 rounded-xl font-bold flex items-center gap-2 disabled:opacity-50 hover:bg-indigo-700">
@@ -1747,14 +1790,23 @@
                                                     <div className="text-[11px] text-slate-500 truncate" title={r.name}>{r.name}</div>
                                                     <div className="mt-1 h-1.5 bg-slate-100 rounded overflow-hidden"><div className="h-full bg-indigo-500" style={{width: Math.max(2,Math.round(r.score*100))+'%'}}></div></div>
                                                     <div className="text-[10px] text-slate-400 text-right">{Math.round(r.score*100)}%</div>
-                                                    {confirmedFor === r.partNo ? (
+                                                    {feedbackFor[r.partNo] === 'yes' ? (
                                                         <div className="mt-2 text-[10px] text-emerald-600 font-bold text-center"><i className="fa-solid fa-check mr-1"></i>บันทึกไว้ฝึกระบบแล้ว</div>
+                                                    ) : feedbackFor[r.partNo] === 'no' ? (
+                                                        <div className="mt-2 text-[10px] text-slate-400 font-bold text-center"><i className="fa-solid fa-xmark mr-1"></i>บันทึกว่าไม่ใช่แล้ว</div>
                                                     ) : (
-                                                        <button onClick={() => handleConfirmMatch(r.partNo)} disabled={confirming}
-                                                            title="ยืนยันว่ารูปที่ค้นหาคือพาร์ทนี้ เพื่อนำไปฝึกระบบให้แม่นขึ้น"
-                                                            className="mt-2 w-full bg-emerald-600 text-white text-[10px] font-bold py-1.5 rounded-lg hover:bg-emerald-700 disabled:opacity-50">
-                                                            ใช่พาร์ทนี้ ✓
-                                                        </button>
+                                                        <div className="mt-2 grid grid-cols-2 gap-1">
+                                                            <button onClick={() => handleConfirmMatch(r.partNo)} disabled={submittingFeedback}
+                                                                title="ยืนยันว่ารูปที่ค้นหาคือพาร์ทนี้ เพื่อนำไปฝึกระบบให้แม่นขึ้น"
+                                                                className="bg-emerald-600 text-white text-[10px] font-bold py-1.5 rounded-lg hover:bg-emerald-700 disabled:opacity-50">
+                                                                ใช่ ✓
+                                                            </button>
+                                                            <button onClick={() => handleRejectMatch(r.partNo)} disabled={submittingFeedback}
+                                                                title="ยืนยันว่ารูปที่ค้นหาไม่ใช่พาร์ทนี้ กันไม่ให้ขึ้นมาสับสนซ้ำอีก"
+                                                                className="bg-slate-100 text-slate-600 text-[10px] font-bold py-1.5 rounded-lg hover:bg-slate-200 disabled:opacity-50">
+                                                                ไม่ใช่ ✕
+                                                            </button>
+                                                        </div>
                                                     )}
                                                 </div>
                                             ))}

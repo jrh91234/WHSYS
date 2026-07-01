@@ -120,6 +120,25 @@ function doGet(e) {
       return ContentService.createTextOutput(JSON.stringify({ embeddings: embeddings })).setMimeType(ContentService.MimeType.JSON);
     }
 
+    // ดึง "ตัวอย่างลบ" ของค้นหาด้วยรูป — เวกเตอร์ของรูปที่ user กดยืนยันว่า "ไม่ใช่พาร์ทนี้"
+    // ใช้ลดคะแนนพาร์ทนั้นตอนค้นหาครั้งถัดไปถ้ารูปใหม่คล้ายกับตัวอย่างลบมาก ๆ (กันความสับสนซ้ำ ๆ)
+    if (action == "getNegativeExamples") {
+      var negSheet = ss.getSheetByName("NegativeExamples");
+      var negatives = {};
+      if (negSheet && negSheet.getLastRow() > 1) {
+        var ndata = negSheet.getDataRange().getValues();
+        for (var ni = 1; ni < ndata.length; ni++) {
+          var npNo = String(ndata[ni][0]).trim();
+          var nvec = ndata[ni][1];
+          if (npNo && nvec) {
+            if (!negatives[npNo]) negatives[npNo] = [];
+            negatives[npNo].push(String(nvec));
+          }
+        }
+      }
+      return ContentService.createTextOutput(JSON.stringify({ negatives: negatives })).setMimeType(ContentService.MimeType.JSON);
+    }
+
     if (action == "getInventory") {
        var invSheet = ss.getSheetByName("Inventory");
        var transSheet = ss.getSheetByName("Transactions");
@@ -435,6 +454,23 @@ function doPost(e) {
         if (rr) { embSh.getRange(rr, 6).setValue(String(it.embedding || "")); savedCount++; }
       });
       return ContentService.createTextOutput(JSON.stringify({ status: "success", count: savedCount })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // 3.12 บันทึก "ตัวอย่างลบ" ของค้นหาด้วยรูป — user กดยืนยันว่ารูปที่ค้นหา "ไม่ใช่" พาร์ทนี้
+    // เก็บแยกจาก PartImages เพราะไม่ใช่รูปจริงของพาร์ท (ไม่ต้องอัปรูปขึ้น Drive แค่เก็บเวกเตอร์ไว้ลดคะแนนพาร์ทนี้ในอนาคต)
+    else if (body.action === "save_negative_example") {
+      var negPartNo = String(body.partNo || "").trim();
+      var negEmbedding = String(body.embedding || "");
+      if (!negPartNo || !negEmbedding) throw new Error("Missing partNo or embedding");
+
+      var negSh = ss.getSheetByName("NegativeExamples");
+      if (!negSh) {
+        negSh = ss.insertSheet("NegativeExamples");
+        negSh.appendRow(["PartNo", "Embedding", "CreatedAt"]);
+      }
+      negSh.appendRow([negPartNo, negEmbedding, new Date().toISOString()]);
+
+      return ContentService.createTextOutput(JSON.stringify({ status: "success" })).setMimeType(ContentService.MimeType.JSON);
     }
 
     // 4. DELETE ITEM
