@@ -56,6 +56,13 @@
         // สร้าง URL รูป thumbnail จาก Google Drive fileId (ไฟล์ต้องตั้งแชร์ "ใครมีลิงก์ดูได้")
         const driveThumb = (fileId, size = 400) => fileId ? `https://drive.google.com/thumbnail?id=${fileId}&sz=w${size}` : "";
 
+        // ลิงก์เปิดดูรูปใน Drive (สำหรับใส่ในไฟล์ Excel/PDF ที่ export)
+        const driveViewLink = (partImages, partNo) => {
+            const fid = partImages[String(partNo || "").trim()]?.fileId;
+            return fid ? `https://drive.google.com/file/d/${fid}/view` : "";
+        };
+        const partFileId = (partImages, partNo) => partImages[String(partNo || "").trim()]?.fileId || "";
+
         // <img> สำหรับรูป Drive ที่ทนต่อการโหลดพร้อมกันหลายรูป (rate-limit):
         // ใช้ lh3.googleusercontent.com เป็นหลัก (เร็ว/โดน throttle น้อย) → ถ้าพลาด fallback ไป
         // drive.google.com/thumbnail → ถ้ายังพลาดอีกให้ลองซ้ำแบบหน่วงเวลา (สูงสุด 3 ครั้ง)
@@ -226,7 +233,8 @@
             Users: (p) => <i className={`fa-solid fa-users ${p.className}`}></i>,
             Check: (p) => <i className={`fa-solid fa-check ${p.className}`}></i>,
             Sort: (p) => <i className={`fa-solid fa-sort ${p.className}`}></i>,
-            Clipboard: (p) => <i className={`fa-solid fa-clipboard-check ${p.className}`}></i>
+            Clipboard: (p) => <i className={`fa-solid fa-clipboard-check ${p.className}`}></i>,
+            Camera: (p) => <i className={`fa-solid fa-camera ${p.className}`}></i>
         };
 
         const ResizableTh = ({ width, onResize, children, className, onClick }) => {
@@ -465,6 +473,8 @@
                             <SidebarItem icon="Dashboard" label="ภาพรวม" active={currentView==='dashboard'} onClick={()=>setCurrentView('dashboard')} />
                             <SidebarItem icon="Warehouse" label="คลังสินค้า" active={currentView==='inventory'} onClick={()=>setCurrentView('inventory')} />
                             <SidebarItem icon="Production" label="แผนผลิต (MRP)" active={currentView==='mrp'} onClick={()=>setCurrentView('mrp')} />
+                            <SidebarItem icon="Search" label="ค้นหาพาร์ท" active={currentView==='searchpart'} onClick={()=>setCurrentView('searchpart')} />
+                            <SidebarItem icon="Camera" label="ค้นหาด้วยรูป" active={currentView==='visualsearch'} onClick={()=>setCurrentView('visualsearch')} />
                             <SidebarItem icon="Clipboard" label="นับสต๊อก" active={currentView==='stockcount'} onClick={()=>setCurrentView('stockcount')} />
                             <SidebarItem icon="History" label="ประวัติรายการ" active={currentView==='history'} onClick={()=>setCurrentView('history')} />
                             <SidebarItem icon="Settings" label="ตั้งค่า" active={currentView==='settings'} onClick={()=>setCurrentView('settings')} />
@@ -490,6 +500,8 @@
                         {currentView === 'dashboard' && <DashboardView inventory={inventory} transactions={transactions} toInventory={()=>setCurrentView('inventory')} />}
                         {currentView === 'inventory' && <InventoryView inventory={inventory} setInventory={setInventory} addTransaction={addTransaction} deleteItem={handleDeleteItem} apiUrl={apiUrl} currentUser={currentUser} setTransactions={setTransactions} partImages={partImages} setPartImages={setPartImages} />}
                         {currentView === 'mrp' && <AdvancedMRPView inventory={inventory} addTransaction={addTransaction} bomData={bomData} setBomData={setBomData} apiUrl={apiUrl} partImages={partImages} setPartImages={setPartImages} currentUser={currentUser} />}
+                        {currentView === 'searchpart' && <SearchPartView inventory={inventory} bomData={bomData} apiUrl={apiUrl} partImages={partImages} setPartImages={setPartImages} currentUser={currentUser} />}
+                        {currentView === 'visualsearch' && <VisualSearchView inventory={inventory} bomData={bomData} apiUrl={apiUrl} partImages={partImages} setPartImages={setPartImages} currentUser={currentUser} />}
                         {currentView === 'stockcount' && <StockCountView inventory={inventory} setInventory={setInventory} addTransaction={addTransaction} currentUser={currentUser} apiUrl={apiUrl} bomData={bomData} />}
                         {currentView === 'history' && <HistoryView transactions={transactions} />}
                         {currentView === 'settings' && <SettingsView apiUrl={apiUrl} setApiUrl={setApiUrl} users={users} currentUser={currentUser} onSaveUser={handleSaveUser} onDeleteUser={handleDeleteUser} />}
@@ -499,6 +511,8 @@
                         <MobileNavItem icon="Dashboard" label="ภาพรวม" active={currentView==='dashboard'} onClick={()=>setCurrentView('dashboard')} />
                         <MobileNavItem icon="Warehouse" label="คลัง" active={currentView==='inventory'} onClick={()=>setCurrentView('inventory')} />
                         <MobileNavItem icon="Production" label="ผลิต" active={currentView==='mrp'} onClick={()=>setCurrentView('mrp')} />
+                        <MobileNavItem icon="Search" label="ค้นหา" active={currentView==='searchpart'} onClick={()=>setCurrentView('searchpart')} />
+                        <MobileNavItem icon="Camera" label="รูปภาพ" active={currentView==='visualsearch'} onClick={()=>setCurrentView('visualsearch')} />
                         <MobileNavItem icon="Clipboard" label="นับสต๊อก" active={currentView==='stockcount'} onClick={()=>setCurrentView('stockcount')} />
                         <MobileNavItem icon="History" label="ประวัติ" active={currentView==='history'} onClick={()=>setCurrentView('history')} />
                         <MobileNavItem icon="Settings" label="ตั้งค่า" active={currentView==='settings'} onClick={()=>setCurrentView('settings')} />
@@ -589,7 +603,7 @@
         };
 
         // ===== ค้นหาด้วยรูป (Visual Search) — แยกออกมาเป็นฟังก์ชันเดี่ยว ไม่ฝังลึกอยู่ใน AdvancedMRPView =====
-        const useVisualSearch = (apiUrl, partImages = {}, partNameMap = {}, mode) => {
+        const useVisualSearch = (apiUrl, partImages = {}, partNameMap = {}) => {
             const [embeddings, setEmbeddings] = useState({});        // partNo -> Float32Array
             const [embLoaded, setEmbLoaded] = useState(false);
             const [visualBusy, setVisualBusy] = useState(false);
@@ -609,7 +623,7 @@
                 } catch (e) { console.log("load embeddings failed", e); }
                 finally { setEmbLoaded(true); }
             }, [apiUrl]);
-            useEffect(() => { if (mode === 'visual' && !embLoaded) loadEmbeddings(); }, [mode, embLoaded, loadEmbeddings]);
+            useEffect(() => { if (!embLoaded) loadEmbeddings(); }, [embLoaded, loadEmbeddings]);
 
             // สร้าง/อัปเดตดัชนี: ดึงรูปเดิมจาก Drive (ผ่าน proxy) มาแปลงเป็นเวกเตอร์แล้วบันทึก
             const buildIndex = async () => {
@@ -673,65 +687,14 @@
             };
         };
 
-        const AdvancedMRPView = ({ inventory, addTransaction, bomData, setBomData, apiUrl, partImages = {}, setPartImages, currentUser }) => {
-            const [step, setStep] = useState(1);
-            const [mode, setMode] = useState('plan'); 
-            const [sheetNames, setSheetNames] = useState(Object.keys(bomData) || []);
-            const [currentPreviewSheet, setCurrentPreviewSheet] = useState(sheetNames[0] || "");
-            
-            const [pNoCol, setPNoCol] = useState(2);
-            const [qtyCol, setQtyCol] = useState(4);
-            const [lvlCol, setLvlCol] = useState(0);
-            const [typeCol, setTypeCol] = useState(6);
-            const [nameCol, setNameCol] = useState(3);
-            
-            const [bomColWidths, setBomColWidths] = useState({});
-
-            const [orderText, setOrderText] = useState("");
-            const [matchCandidates, setMatchCandidates] = useState([]);
-            const [showConfirmModal, setShowConfirmModal] = useState(false);
-            
-            const [finalSummary, setFinalSummary] = useState(null); 
-            const [finalTree, setFinalTree] = useState(null);       
-            const [resultViewMode, setResultViewMode] = useState('tree'); 
-            const [breakdownItem, setBreakdownItem] = useState(null); 
-            
-            const { searchPartQuery, setSearchPartQuery, partSearchResults, setPartSearchResults, handlePartSearch } =
-                usePartSearch(bomData, sheetNames, { pNoCol, nameCol, qtyCol, typeCol });
-
-            const [isLoading, setIsLoading] = useState(false);
-            const [sortConfig, setSortConfig] = useState({ key: null, direction: 'ascending' });
-            const [compareList, setCompareList] = useState(["", ""]);
-            const [compResult, setCompResult] = useState(null);
-
-            // --- รูปประจำ Part (เก็บใน Google Drive) ---
+        // ===== รูปประจำ Part (เก็บใน Google Drive) — แยกออกมาเป็นฟังก์ชันเดี่ยว ใช้ร่วมกันได้ทุกหน้าที่โชว์รูปพาร์ท =====
+        const usePartImageManager = (apiUrl, partImages = {}, setPartImages, currentUser) => {
             const imgFileRef = useRef(null);
             const uploadTargetPart = useRef("");
             const [uploadingPart, setUploadingPart] = useState("");
             const [localPreviews, setLocalPreviews] = useState({}); // partNo -> dataURL (โชว์ทันทีหลังอัป ระหว่างรอ Drive สร้าง thumbnail)
             const [lightbox, setLightbox] = useState(null);          // { partNo, src }
             const [namePopup, setNamePopup] = useState(null);        // { partNo, name } เมนูเด้งตอนกดชื่อพาร์ท
-
-            // แผนที่ Part No -> ชื่อ (จาก inventory + ทุกชีต BOM) สำหรับแสดงผลค้นหาด้วยรูป
-            const partNameMap = useMemo(() => {
-                const m = {};
-                (inventory || []).forEach(it => { const p = String(it.partNo || "").trim(); if (p && !m[p]) m[p] = it.name || ""; });
-                Object.keys(bomData || {}).forEach(sh => {
-                    (bomData[sh] || []).slice(1).forEach(row => {
-                        const p = String(row[pNoCol] || "").trim();
-                        if (p && !m[p]) m[p] = String(row[nameCol] || "");
-                    });
-                });
-                return m;
-            }, [inventory, bomData, pNoCol, nameCol]);
-
-            // --- Visual Search (ค้นหาด้วยรูป) ---
-            const imgSearchRef = useRef(null);
-            const {
-                embeddings, embLoaded, visualBusy, visualMsg, indexProg,
-                queryPreview, setQueryPreview, visualResults, setVisualResults,
-                buildIndex, handleQueryImage
-            } = useVisualSearch(apiUrl, partImages, partNameMap, mode);
 
             const resizeToJpeg = (file, maxDim = 1280, quality = 0.82) => {
                 return new Promise((resolve, reject) => {
@@ -831,6 +794,113 @@
                 const rec = partImages[partNo];
                 return rec && rec.fileId ? driveThumb(rec.fileId, size) : "";
             };
+
+            return {
+                imgFileRef, uploadingPart, lightbox, setLightbox, namePopup, setNamePopup,
+                pickImageFor, handleImageFile, handleDeleteImage, imgSrcFor
+            };
+        };
+
+        // Modal คู่กัน: lightbox ดูรูปเต็มจอ + popup จัดการรูปตอนกดชื่อพาร์ท (ใช้ร่วมกับ usePartImageManager)
+        const ImagePreviewModals = ({ imgFileRef, onFileChange, lightbox, setLightbox, namePopup, setNamePopup, imgSrcFor, pickImageFor, handleDeleteImage }) => {
+            const popHasImg = namePopup ? !!imgSrcFor(namePopup.partNo) : false;
+            return (
+                <>
+                    <input type="file" ref={imgFileRef} onChange={onFileChange} className="hidden" accept="image/*" />
+
+                    {lightbox && (
+                        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 modal-overlay" onClick={() => setLightbox(null)}>
+                            <div className="relative max-w-3xl w-full" onClick={e => e.stopPropagation()}>
+                                <div className="flex justify-between items-center text-white mb-2">
+                                    <span className="font-mono font-bold">{lightbox.partNo}</span>
+                                    <div className="flex gap-3 items-center">
+                                        <button onClick={() => { const p = lightbox.partNo; setLightbox(null); pickImageFor(p); }} className="text-sm hover:text-blue-300"><i className="fa-solid fa-pen mr-1"></i>เปลี่ยนรูป</button>
+                                        <button onClick={() => { const p = lightbox.partNo; setLightbox(null); handleDeleteImage(p); }} className="text-sm hover:text-red-400"><i className="fa-solid fa-trash-can mr-1"></i>ลบ</button>
+                                        <button onClick={() => setLightbox(null)} className="text-2xl hover:text-slate-300"><Icons.X/></button>
+                                    </div>
+                                </div>
+                                <img src={lightbox.src} alt={lightbox.partNo} className="w-full max-h-[80vh] object-contain rounded-lg bg-white" />
+                            </div>
+                        </div>
+                    )}
+
+                    {namePopup && (
+                        <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center p-4 modal-overlay" onClick={() => setNamePopup(null)}>
+                            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-5 animate-fade-in" onClick={e => e.stopPropagation()}>
+                                <div className="flex justify-between items-start mb-1">
+                                    <div className="min-w-0">
+                                        <div className="font-mono font-bold text-blue-600 truncate">{namePopup.partNo}</div>
+                                        <div className="text-sm text-slate-500 truncate">{namePopup.name}</div>
+                                    </div>
+                                    <button onClick={() => setNamePopup(null)} className="text-slate-400 hover:text-slate-600 text-xl ml-2"><Icons.X/></button>
+                                </div>
+                                {popHasImg && (
+                                    <img src={imgSrcFor(namePopup.partNo, 1000)} alt={namePopup.partNo}
+                                        className="w-full h-40 object-contain rounded-lg border bg-slate-50 my-3" />
+                                )}
+                                <div className="grid grid-cols-2 gap-2 mt-3">
+                                    <button onClick={() => { const p = namePopup.partNo; setNamePopup(null); pickImageFor(p, true); }}
+                                        className="col-span-2 bg-emerald-600 text-white py-3 rounded-xl font-bold hover:bg-emerald-700 flex items-center justify-center gap-2">
+                                        <i className="fa-solid fa-camera"></i> ถ่ายรูป
+                                    </button>
+                                    <button onClick={() => { const p = namePopup.partNo; setNamePopup(null); pickImageFor(p, false); }}
+                                        className="bg-slate-100 text-slate-700 py-2.5 rounded-xl font-bold hover:bg-slate-200 flex items-center justify-center gap-2">
+                                        <i className="fa-solid fa-image"></i> เลือกจากเครื่อง
+                                    </button>
+                                    {popHasImg ? (
+                                        <button onClick={() => { const p = namePopup.partNo; setNamePopup(null); setLightbox({ partNo: p, src: imgSrcFor(p, 1600) }); }}
+                                            className="bg-slate-100 text-slate-700 py-2.5 rounded-xl font-bold hover:bg-slate-200 flex items-center justify-center gap-2">
+                                            <i className="fa-solid fa-expand"></i> ดูเต็มจอ
+                                        </button>
+                                    ) : (
+                                        <div className="flex items-center justify-center text-xs text-slate-400">ยังไม่มีรูป</div>
+                                    )}
+                                    {popHasImg && (
+                                        <button onClick={() => { const p = namePopup.partNo; setNamePopup(null); handleDeleteImage(p); }}
+                                            className="col-span-2 text-red-500 py-2 rounded-xl font-bold hover:bg-red-50 flex items-center justify-center gap-2">
+                                            <i className="fa-solid fa-trash-can"></i> ลบรูป
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </>
+            );
+        };
+
+        const AdvancedMRPView = ({ inventory, addTransaction, bomData, setBomData, apiUrl, partImages = {}, setPartImages, currentUser }) => {
+            const [step, setStep] = useState(1);
+            const [mode, setMode] = useState('plan'); 
+            const [sheetNames, setSheetNames] = useState(Object.keys(bomData) || []);
+            const [currentPreviewSheet, setCurrentPreviewSheet] = useState(sheetNames[0] || "");
+            
+            const [pNoCol, setPNoCol] = useState(2);
+            const [qtyCol, setQtyCol] = useState(4);
+            const [lvlCol, setLvlCol] = useState(0);
+            const [typeCol, setTypeCol] = useState(6);
+            const [nameCol, setNameCol] = useState(3);
+            
+            const [bomColWidths, setBomColWidths] = useState({});
+
+            const [orderText, setOrderText] = useState("");
+            const [matchCandidates, setMatchCandidates] = useState([]);
+            const [showConfirmModal, setShowConfirmModal] = useState(false);
+            
+            const [finalSummary, setFinalSummary] = useState(null); 
+            const [finalTree, setFinalTree] = useState(null);       
+            const [resultViewMode, setResultViewMode] = useState('tree'); 
+            const [breakdownItem, setBreakdownItem] = useState(null); 
+            
+            const [isLoading, setIsLoading] = useState(false);
+            const [sortConfig, setSortConfig] = useState({ key: null, direction: 'ascending' });
+            const [compareList, setCompareList] = useState(["", ""]);
+            const [compResult, setCompResult] = useState(null);
+
+            const {
+                imgFileRef, uploadingPart, lightbox, setLightbox, namePopup, setNamePopup,
+                pickImageFor, handleImageFile, handleDeleteImage, imgSrcFor
+            } = usePartImageManager(apiUrl, partImages, setPartImages, currentUser);
 
             const getSimilarity = (s1, s2) => {
                 s1 = String(s1 || "").toLowerCase().trim(); 
@@ -1002,13 +1072,6 @@
                 setCompResult({ models: validModels, rows });
             };
 
-            // ลิงก์เปิดดูรูปใน Drive (สำหรับใส่ในไฟล์ Excel)
-            const driveViewLink = (partNo) => {
-                const fid = partImages[String(partNo || "").trim()]?.fileId;
-                return fid ? `https://drive.google.com/file/d/${fid}/view` : "";
-            };
-            const partFileId = (partNo) => partImages[String(partNo || "").trim()]?.fileId || "";
-
             // --- Export: BOM Compare ---
             const exportCompareExcel = () => {
                 if (!compResult) return;
@@ -1016,7 +1079,7 @@
                     const o = { "Part No": r.partNo, "Name": r.name };
                     compResult.models.forEach((m, i) => { o[m] = r.quantities[i]; });
                     o["Status"] = r.status;
-                    o["รูป (ลิงก์)"] = driveViewLink(r.partNo);
+                    o["รูป (ลิงก์)"] = driveViewLink(partImages, r.partNo);
                     return o;
                 });
                 exportToExcel(data, "BOM_Compare", "Compare");
@@ -1025,26 +1088,10 @@
                 if (!compResult) return;
                 const headers = ["รูป", "Part No", "Name", ...compResult.models, "Status"];
                 const rows = compResult.rows.map(r => {
-                    const fid = partFileId(r.partNo);
+                    const fid = partFileId(partImages, r.partNo);
                     return [fid ? { imgId: fid } : "", r.partNo, r.name, ...r.quantities.map(q => formatNum(q)), r.status];
                 });
                 exportTableToPDF("BOM Compare: " + compResult.models.join(" vs "), headers, rows);
-            };
-
-            // --- Export: Search Part ---
-            const exportSearchExcel = () => {
-                if (!partSearchResults || partSearchResults.length === 0) return alert("ไม่มีผลการค้นหาให้ export");
-                const data = partSearchResults.map(it => ({ "Part No": it.partNo, "Name": it.name, "Used In (Model)": it.model, "Qty": it.qty, "Type": it.type, "รูป (ลิงก์)": driveViewLink(it.partNo) }));
-                exportToExcel(data, "Part_Search", "Search");
-            };
-            const exportSearchPDF = () => {
-                if (!partSearchResults || partSearchResults.length === 0) return alert("ไม่มีผลการค้นหาให้ export");
-                const headers = ["รูป", "Part No", "Name", "Used In (Model)", "Qty", "Type"];
-                const rows = partSearchResults.map(it => {
-                    const fid = partFileId(it.partNo);
-                    return [fid ? { imgId: fid } : "", it.partNo, it.name, it.model, formatNum(it.qty), it.type];
-                });
-                exportTableToPDF("Part Search: " + (searchPartQuery || ""), headers, rows);
             };
 
             const requestSort = (key) => {
@@ -1074,69 +1121,11 @@
                 return sortableItems;
             }, [finalSummary, sortConfig]);
 
-            const popHasImg = namePopup ? !!imgSrcFor(namePopup.partNo) : false;
-
             return (
                 <div className="animate-fade-in space-y-6">
-                    <input type="file" ref={imgFileRef} onChange={handleImageFile} className="hidden" accept="image/*" />
-
-                    {lightbox && (
-                        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 modal-overlay" onClick={() => setLightbox(null)}>
-                            <div className="relative max-w-3xl w-full" onClick={e => e.stopPropagation()}>
-                                <div className="flex justify-between items-center text-white mb-2">
-                                    <span className="font-mono font-bold">{lightbox.partNo}</span>
-                                    <div className="flex gap-3 items-center">
-                                        <button onClick={() => { const p = lightbox.partNo; setLightbox(null); pickImageFor(p); }} className="text-sm hover:text-blue-300"><i className="fa-solid fa-pen mr-1"></i>เปลี่ยนรูป</button>
-                                        <button onClick={() => { const p = lightbox.partNo; setLightbox(null); handleDeleteImage(p); }} className="text-sm hover:text-red-400"><i className="fa-solid fa-trash-can mr-1"></i>ลบ</button>
-                                        <button onClick={() => setLightbox(null)} className="text-2xl hover:text-slate-300"><Icons.X/></button>
-                                    </div>
-                                </div>
-                                <img src={lightbox.src} alt={lightbox.partNo} className="w-full max-h-[80vh] object-contain rounded-lg bg-white" />
-                            </div>
-                        </div>
-                    )}
-
-                    {namePopup && (
-                        <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center p-4 modal-overlay" onClick={() => setNamePopup(null)}>
-                            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-5 animate-fade-in" onClick={e => e.stopPropagation()}>
-                                <div className="flex justify-between items-start mb-1">
-                                    <div className="min-w-0">
-                                        <div className="font-mono font-bold text-blue-600 truncate">{namePopup.partNo}</div>
-                                        <div className="text-sm text-slate-500 truncate">{namePopup.name}</div>
-                                    </div>
-                                    <button onClick={() => setNamePopup(null)} className="text-slate-400 hover:text-slate-600 text-xl ml-2"><Icons.X/></button>
-                                </div>
-                                {popHasImg && (
-                                    <img src={imgSrcFor(namePopup.partNo, 1000)} alt={namePopup.partNo}
-                                        className="w-full h-40 object-contain rounded-lg border bg-slate-50 my-3" />
-                                )}
-                                <div className="grid grid-cols-2 gap-2 mt-3">
-                                    <button onClick={() => { const p = namePopup.partNo; setNamePopup(null); pickImageFor(p, true); }}
-                                        className="col-span-2 bg-emerald-600 text-white py-3 rounded-xl font-bold hover:bg-emerald-700 flex items-center justify-center gap-2">
-                                        <i className="fa-solid fa-camera"></i> ถ่ายรูป
-                                    </button>
-                                    <button onClick={() => { const p = namePopup.partNo; setNamePopup(null); pickImageFor(p, false); }}
-                                        className="bg-slate-100 text-slate-700 py-2.5 rounded-xl font-bold hover:bg-slate-200 flex items-center justify-center gap-2">
-                                        <i className="fa-solid fa-image"></i> เลือกจากเครื่อง
-                                    </button>
-                                    {popHasImg ? (
-                                        <button onClick={() => { const p = namePopup.partNo; setNamePopup(null); setLightbox({ partNo: p, src: imgSrcFor(p, 1600) }); }}
-                                            className="bg-slate-100 text-slate-700 py-2.5 rounded-xl font-bold hover:bg-slate-200 flex items-center justify-center gap-2">
-                                            <i className="fa-solid fa-expand"></i> ดูเต็มจอ
-                                        </button>
-                                    ) : (
-                                        <div className="flex items-center justify-center text-xs text-slate-400">ยังไม่มีรูป</div>
-                                    )}
-                                    {popHasImg && (
-                                        <button onClick={() => { const p = namePopup.partNo; setNamePopup(null); handleDeleteImage(p); }}
-                                            className="col-span-2 text-red-500 py-2 rounded-xl font-bold hover:bg-red-50 flex items-center justify-center gap-2">
-                                            <i className="fa-solid fa-trash-can"></i> ลบรูป
-                                        </button>
-                                    )}
-                                </div>
-                            </div>
-                        </div>
-                    )}
+                    <ImagePreviewModals imgFileRef={imgFileRef} onFileChange={handleImageFile}
+                        lightbox={lightbox} setLightbox={setLightbox} namePopup={namePopup} setNamePopup={setNamePopup}
+                        imgSrcFor={imgSrcFor} pickImageFor={pickImageFor} handleDeleteImage={handleDeleteImage} />
 
                     <div className="flex bg-white p-2 rounded-xl shadow-sm border mb-6">
                         {['1. Setup BOM', '2. Functions', '3. Result'].map((t, i) => (
@@ -1247,8 +1236,6 @@
                              <div className="flex gap-4 border-b mb-6 overflow-x-auto pb-1">
                                  <button onClick={()=>setMode('plan')} className={`pb-2 px-2 text-sm font-bold whitespace-nowrap transition ${mode==='plan'?'border-b-2 border-blue-600 text-blue-600':'text-slate-400 hover:text-slate-600'}`}><Icons.Production className="mr-1"/> Production Plan</button>
                                  <button onClick={()=>setMode('compare')} className={`pb-2 px-2 text-sm font-bold whitespace-nowrap transition ${mode==='compare'?'border-b-2 border-purple-600 text-purple-600':'text-slate-400 hover:text-slate-600'}`}><Icons.Compare className="mr-1"/> BOM Compare</button>
-                                 <button onClick={()=>setMode('search')} className={`pb-2 px-2 text-sm font-bold whitespace-nowrap transition ${mode==='search'?'border-b-2 border-orange-500 text-orange-500':'text-slate-400 hover:text-slate-600'}`}><Icons.Search className="mr-1"/> Search Part</button>
-                                 <button onClick={()=>setMode('visual')} className={`pb-2 px-2 text-sm font-bold whitespace-nowrap transition ${mode==='visual'?'border-b-2 border-indigo-500 text-indigo-500':'text-slate-400 hover:text-slate-600'}`}><i className="fa-solid fa-camera mr-1"></i> ค้นหาด้วยรูป</button>
                              </div>
                             
                             {mode === 'plan' && (
@@ -1302,149 +1289,6 @@
                                 </>
                             )}
 
-                            {mode === 'search' && (
-                                <div className="animate-fade-in">
-                                    <div className="flex gap-2 mb-6">
-                                        <input 
-                                            type="text" 
-                                            value={searchPartQuery} 
-                                            onChange={e => setSearchPartQuery(e.target.value)} 
-                                            onKeyDown={e => e.key === 'Enter' && handlePartSearch()}
-                                            className="flex-1 p-3 border rounded-xl outline-none focus:ring-2 focus:ring-orange-100" 
-                                            placeholder="ระบุ Part No หรือ ชื่อสินค้า..." 
-                                        />
-                                        <button onClick={handlePartSearch} className="bg-orange-500 text-white px-6 rounded-xl font-bold shadow-lg flex items-center gap-2">
-                                            <Icons.Search/> ค้นหา
-                                        </button>
-                                    </div>
-
-                                    {partSearchResults && (
-                                        <div className="overflow-hidden border rounded-xl">
-                                            <div className="bg-orange-50 p-3 text-xs font-bold text-orange-800 border-b flex justify-between items-center gap-2">
-                                                <span>ผลการค้นหา: พบ {partSearchResults.length} รายการ</span>
-                                                {partSearchResults.length > 0 && (
-                                                    <div className="flex gap-2">
-                                                        <button onClick={exportSearchExcel} className="bg-emerald-600 text-white px-3 py-1 rounded-lg font-bold flex items-center gap-1 hover:bg-emerald-700"><i className="fa-solid fa-file-excel"></i> Excel</button>
-                                                        <button onClick={exportSearchPDF} className="bg-red-500 text-white px-3 py-1 rounded-lg font-bold flex items-center gap-1 hover:bg-red-600"><i className="fa-solid fa-file-pdf"></i> PDF</button>
-                                                    </div>
-                                                )}
-                                            </div>
-                                            <div className="overflow-auto max-h-96">
-                                                <table className="w-full text-xs text-left">
-                                                    <thead className="bg-white sticky top-0">
-                                                        <tr className="border-b text-slate-500">
-                                                            <th className="p-3 w-14">รูป</th>
-                                                            <th className="p-3">Part No / Name</th>
-                                                            <th className="p-3">Used In (Model)</th>
-                                                            <th className="p-3 text-right">Qty/Unit</th>
-                                                            <th className="p-3 text-center">Type</th>
-                                                        </tr>
-                                                    </thead>
-                                                    <tbody className="divide-y">
-                                                        {partSearchResults.length === 0 ? (
-                                                            <tr><td colSpan="5" className="p-8 text-center text-slate-400">ไม่พบข้อมูล</td></tr>
-                                                        ) : (
-                                                            partSearchResults.map((item, idx) => {
-                                                                const sPartNo = String(item.partNo||"").trim();
-                                                                const sThumb = sPartNo ? imgSrcFor(sPartNo) : "";
-                                                                return (
-                                                                <tr key={idx} className="hover:bg-slate-50">
-                                                                    <td className="p-2 text-center">
-                                                                        {sThumb ? (
-                                                                            <DriveImg src={sThumb} fileId={partImages[sPartNo]?.fileId} size={400} alt={item.partNo}
-                                                                                onClick={() => setLightbox({ partNo: sPartNo, src: imgSrcFor(sPartNo, 1600) })}
-                                                                                className="w-9 h-9 object-cover rounded border cursor-zoom-in mx-auto" />
-                                                                        ) : (
-                                                                            <button onClick={() => pickImageFor(sPartNo)} title="อัปโหลดรูป"
-                                                                                className="w-9 h-9 rounded border border-dashed border-slate-300 text-slate-300 hover:text-blue-500 hover:border-blue-400 mx-auto flex items-center justify-center"><i className="fa-solid fa-camera"></i></button>
-                                                                        )}
-                                                                    </td>
-                                                                    <td className={sPartNo ? "p-0" : "p-3"}>
-                                                                        {sPartNo ? (
-                                                                            <button type="button"
-                                                                                onClick={() => setNamePopup({ partNo: sPartNo, name: String(item.name||"") })}
-                                                                                title="กดเพื่อถ่ายรูป / จัดการรูปพาร์ทนี้"
-                                                                                className="w-full text-left p-3 active:bg-emerald-100 hover:bg-emerald-50">
-                                                                                <div className="font-bold text-blue-600">{item.partNo}</div>
-                                                                                <div className="text-slate-500"><i className="fa-solid fa-camera text-emerald-400 mr-1 text-[10px]"></i>{item.name}</div>
-                                                                            </button>
-                                                                        ) : (
-                                                                            <div className="p-3">
-                                                                                <div className="font-bold text-blue-600">{item.partNo}</div>
-                                                                                <div className="text-slate-500">{item.name}</div>
-                                                                            </div>
-                                                                        )}
-                                                                    </td>
-                                                                    <td className="p-3 font-bold text-slate-700">{item.model}</td>
-                                                                    <td className="p-3 text-right">{formatNum(item.qty)}</td>
-                                                                    <td className="p-3 text-center">{item.type}</td>
-                                                                </tr>
-                                                                );
-                                                            })
-                                                        )}
-                                                    </tbody>
-                                                </table>
-                                            </div>
-                                        </div>
-                                    )}
-                                </div>
-                            )}
-
-                            {mode === 'visual' && (
-                                <div className="animate-fade-in space-y-4">
-                                    <input type="file" ref={imgSearchRef} onChange={handleQueryImage} className="hidden" accept="image/*" capture="environment" />
-                                    <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4 text-xs text-indigo-800 flex items-start gap-2">
-                                        <i className="fa-solid fa-circle-info mt-0.5"></i>
-                                        <span>ถ่ายรูปพาร์ทเพื่อค้นหาจากความเหมือนของรูป — ต้องกด "สร้างดัชนีรูป" ก่อนอย่างน้อย 1 ครั้ง (ประมวลผลด้วย AI ในเครื่องคุณเอง ไม่ส่งรูปออกไปไหน)</span>
-                                    </div>
-                                    <div className="flex flex-wrap gap-2 items-center">
-                                        <button onClick={()=>imgSearchRef.current && imgSearchRef.current.click()} disabled={visualBusy} className="bg-indigo-600 text-white px-5 py-3 rounded-xl font-bold flex items-center gap-2 disabled:opacity-50 hover:bg-indigo-700">
-                                            <i className="fa-solid fa-camera"></i> ถ่าย/เลือกรูปเพื่อค้นหา
-                                        </button>
-                                        <button onClick={buildIndex} disabled={visualBusy} className="bg-white border px-4 py-3 rounded-xl font-bold text-slate-600 flex items-center gap-2 disabled:opacity-50 hover:bg-slate-50">
-                                            <i className="fa-solid fa-database"></i> สร้าง/อัปเดตดัชนีรูป
-                                        </button>
-                                        <span className="text-xs text-slate-500">มีรูป {Object.keys(partImages).length} · ทำดัชนีแล้ว {Object.keys(embeddings).length}</span>
-                                    </div>
-                                    {visualBusy && (
-                                        <div className="text-sm text-slate-600 flex items-center gap-2">
-                                            <div className="loader" style={{width:16,height:16,borderWidth:2}}></div>
-                                            <span>{visualMsg}{indexProg.total ? ` (${indexProg.done}/${indexProg.total})` : ''}</span>
-                                        </div>
-                                    )}
-                                    {(queryPreview || visualResults) && (
-                                        <div className="flex flex-col sm:flex-row gap-4 items-start">
-                                            {queryPreview && (
-                                                <div className="shrink-0">
-                                                    <div className="text-[10px] text-slate-400 mb-1">รูปที่ค้นหา</div>
-                                                    <img src={queryPreview} alt="query" className="w-28 h-28 object-cover rounded-lg border" />
-                                                </div>
-                                            )}
-                                            <div className="flex-1 w-full">
-                                                {visualResults && visualResults.length > 0 ? (
-                                                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-                                                        {visualResults.map((r,i)=>(
-                                                            <div key={i} className="border rounded-xl p-2 hover:shadow-md transition">
-                                                                {partImages[r.partNo]?.fileId ? (
-                                                                    <DriveImg src={imgSrcFor(r.partNo)} fileId={partImages[r.partNo]?.fileId} size={400}
-                                                                        onClick={()=>setLightbox({partNo:r.partNo, src: imgSrcFor(r.partNo,1600)})}
-                                                                        className="w-full h-24 object-cover rounded-lg border mb-2 cursor-zoom-in" />
-                                                                ) : <div className="w-full h-24 rounded-lg border mb-2 bg-slate-50"></div>}
-                                                                <div className="font-mono font-bold text-blue-600 text-xs truncate">{r.partNo}</div>
-                                                                <div className="text-[11px] text-slate-500 truncate" title={r.name}>{r.name}</div>
-                                                                <div className="mt-1 h-1.5 bg-slate-100 rounded overflow-hidden"><div className="h-full bg-indigo-500" style={{width: Math.max(2,Math.round(r.score*100))+'%'}}></div></div>
-                                                                <div className="text-[10px] text-slate-400 text-right">{Math.round(r.score*100)}%</div>
-                                                            </div>
-                                                        ))}
-                                                    </div>
-                                                ) : (visualResults && !visualBusy) ? (
-                                                    <div className="text-center text-slate-400 py-8">ไม่พบพาร์ทที่ใกล้เคียง</div>
-                                                ) : null}
-                                            </div>
-                                        </div>
-                                    )}
-                                </div>
-                            )}
                         </div>
                     )}
 
@@ -1624,7 +1468,222 @@
                 </div>
             );
         };
-        
+
+        // ตำแหน่งคอลัมน์มาตรฐานของชีต BOM (Part No / Name / Qty / Type) — ตรงกับค่าเริ่มต้นในหน้าแผนผลิต (MRP)
+        const BOM_COLS = { pNoCol: 2, nameCol: 3, qtyCol: 4, typeCol: 6 };
+
+        const SearchPartView = ({ inventory, bomData, apiUrl, partImages = {}, setPartImages, currentUser }) => {
+            const sheetNames = useMemo(() => Object.keys(bomData || {}), [bomData]);
+            const { searchPartQuery, setSearchPartQuery, partSearchResults, handlePartSearch } =
+                usePartSearch(bomData, sheetNames, BOM_COLS);
+            const {
+                imgFileRef, lightbox, setLightbox, namePopup, setNamePopup,
+                pickImageFor, handleImageFile, handleDeleteImage, imgSrcFor
+            } = usePartImageManager(apiUrl, partImages, setPartImages, currentUser);
+
+            const exportSearchExcel = () => {
+                if (!partSearchResults || partSearchResults.length === 0) return alert("ไม่มีผลการค้นหาให้ export");
+                const data = partSearchResults.map(it => ({ "Part No": it.partNo, "Name": it.name, "Used In (Model)": it.model, "Qty": it.qty, "Type": it.type, "รูป (ลิงก์)": driveViewLink(partImages, it.partNo) }));
+                exportToExcel(data, "Part_Search", "Search");
+            };
+            const exportSearchPDF = () => {
+                if (!partSearchResults || partSearchResults.length === 0) return alert("ไม่มีผลการค้นหาให้ export");
+                const headers = ["รูป", "Part No", "Name", "Used In (Model)", "Qty", "Type"];
+                const rows = partSearchResults.map(it => {
+                    const fid = partFileId(partImages, it.partNo);
+                    return [fid ? { imgId: fid } : "", it.partNo, it.name, it.model, formatNum(it.qty), it.type];
+                });
+                exportTableToPDF("Part Search: " + (searchPartQuery || ""), headers, rows);
+            };
+
+            return (
+                <div className="animate-fade-in space-y-6">
+                    <ImagePreviewModals imgFileRef={imgFileRef} onFileChange={handleImageFile}
+                        lightbox={lightbox} setLightbox={setLightbox} namePopup={namePopup} setNamePopup={setNamePopup}
+                        imgSrcFor={imgSrcFor} pickImageFor={pickImageFor} handleDeleteImage={handleDeleteImage} />
+
+                    <div className="bg-white p-6 rounded-2xl shadow-sm border">
+                        <h3 className="font-bold mb-6 flex items-center gap-2"><Icons.Search/> ค้นหาพาร์ท</h3>
+
+                        <div className="flex gap-2 mb-6">
+                            <input
+                                type="text"
+                                value={searchPartQuery}
+                                onChange={e => setSearchPartQuery(e.target.value)}
+                                onKeyDown={e => e.key === 'Enter' && handlePartSearch()}
+                                className="flex-1 p-3 border rounded-xl outline-none focus:ring-2 focus:ring-orange-100"
+                                placeholder="ระบุ Part No หรือ ชื่อสินค้า..."
+                            />
+                            <button onClick={handlePartSearch} className="bg-orange-500 text-white px-6 rounded-xl font-bold shadow-lg flex items-center gap-2">
+                                <Icons.Search/> ค้นหา
+                            </button>
+                        </div>
+
+                        {partSearchResults && (
+                            <div className="overflow-hidden border rounded-xl">
+                                <div className="bg-orange-50 p-3 text-xs font-bold text-orange-800 border-b flex justify-between items-center gap-2">
+                                    <span>ผลการค้นหา: พบ {partSearchResults.length} รายการ</span>
+                                    {partSearchResults.length > 0 && (
+                                        <div className="flex gap-2">
+                                            <button onClick={exportSearchExcel} className="bg-emerald-600 text-white px-3 py-1 rounded-lg font-bold flex items-center gap-1 hover:bg-emerald-700"><i className="fa-solid fa-file-excel"></i> Excel</button>
+                                            <button onClick={exportSearchPDF} className="bg-red-500 text-white px-3 py-1 rounded-lg font-bold flex items-center gap-1 hover:bg-red-600"><i className="fa-solid fa-file-pdf"></i> PDF</button>
+                                        </div>
+                                    )}
+                                </div>
+                                <div className="overflow-auto max-h-96">
+                                    <table className="w-full text-xs text-left">
+                                        <thead className="bg-white sticky top-0">
+                                            <tr className="border-b text-slate-500">
+                                                <th className="p-3 w-14">รูป</th>
+                                                <th className="p-3">Part No / Name</th>
+                                                <th className="p-3">Used In (Model)</th>
+                                                <th className="p-3 text-right">Qty/Unit</th>
+                                                <th className="p-3 text-center">Type</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y">
+                                            {partSearchResults.length === 0 ? (
+                                                <tr><td colSpan="5" className="p-8 text-center text-slate-400">ไม่พบข้อมูล</td></tr>
+                                            ) : (
+                                                partSearchResults.map((item, idx) => {
+                                                    const sPartNo = String(item.partNo||"").trim();
+                                                    const sThumb = sPartNo ? imgSrcFor(sPartNo) : "";
+                                                    return (
+                                                    <tr key={idx} className="hover:bg-slate-50">
+                                                        <td className="p-2 text-center">
+                                                            {sThumb ? (
+                                                                <DriveImg src={sThumb} fileId={partImages[sPartNo]?.fileId} size={400} alt={item.partNo}
+                                                                    onClick={() => setLightbox({ partNo: sPartNo, src: imgSrcFor(sPartNo, 1600) })}
+                                                                    className="w-9 h-9 object-cover rounded border cursor-zoom-in mx-auto" />
+                                                            ) : (
+                                                                <button onClick={() => pickImageFor(sPartNo)} title="อัปโหลดรูป"
+                                                                    className="w-9 h-9 rounded border border-dashed border-slate-300 text-slate-300 hover:text-blue-500 hover:border-blue-400 mx-auto flex items-center justify-center"><i className="fa-solid fa-camera"></i></button>
+                                                            )}
+                                                        </td>
+                                                        <td className={sPartNo ? "p-0" : "p-3"}>
+                                                            {sPartNo ? (
+                                                                <button type="button"
+                                                                    onClick={() => setNamePopup({ partNo: sPartNo, name: String(item.name||"") })}
+                                                                    title="กดเพื่อถ่ายรูป / จัดการรูปพาร์ทนี้"
+                                                                    className="w-full text-left p-3 active:bg-emerald-100 hover:bg-emerald-50">
+                                                                    <div className="font-bold text-blue-600">{item.partNo}</div>
+                                                                    <div className="text-slate-500"><i className="fa-solid fa-camera text-emerald-400 mr-1 text-[10px]"></i>{item.name}</div>
+                                                                </button>
+                                                            ) : (
+                                                                <div className="p-3">
+                                                                    <div className="font-bold text-blue-600">{item.partNo}</div>
+                                                                    <div className="text-slate-500">{item.name}</div>
+                                                                </div>
+                                                            )}
+                                                        </td>
+                                                        <td className="p-3 font-bold text-slate-700">{item.model}</td>
+                                                        <td className="p-3 text-right">{formatNum(item.qty)}</td>
+                                                        <td className="p-3 text-center">{item.type}</td>
+                                                    </tr>
+                                                    );
+                                                })
+                                            )}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        };
+
+        const VisualSearchView = ({ inventory, bomData, apiUrl, partImages = {}, setPartImages, currentUser }) => {
+            // แผนที่ Part No -> ชื่อ (จาก inventory + ทุกชีต BOM) สำหรับแสดงผลค้นหาด้วยรูป
+            const partNameMap = useMemo(() => {
+                const m = {};
+                (inventory || []).forEach(it => { const p = String(it.partNo || "").trim(); if (p && !m[p]) m[p] = it.name || ""; });
+                Object.keys(bomData || {}).forEach(sh => {
+                    (bomData[sh] || []).slice(1).forEach(row => {
+                        const p = String(row[BOM_COLS.pNoCol] || "").trim();
+                        if (p && !m[p]) m[p] = String(row[BOM_COLS.nameCol] || "");
+                    });
+                });
+                return m;
+            }, [inventory, bomData]);
+
+            const imgSearchRef = useRef(null);
+            const {
+                embeddings, visualBusy, visualMsg, indexProg,
+                queryPreview, visualResults,
+                buildIndex, handleQueryImage
+            } = useVisualSearch(apiUrl, partImages, partNameMap);
+
+            const {
+                imgFileRef, lightbox, setLightbox, namePopup, setNamePopup,
+                pickImageFor, handleImageFile, handleDeleteImage, imgSrcFor
+            } = usePartImageManager(apiUrl, partImages, setPartImages, currentUser);
+
+            return (
+                <div className="animate-fade-in space-y-6">
+                    <ImagePreviewModals imgFileRef={imgFileRef} onFileChange={handleImageFile}
+                        lightbox={lightbox} setLightbox={setLightbox} namePopup={namePopup} setNamePopup={setNamePopup}
+                        imgSrcFor={imgSrcFor} pickImageFor={pickImageFor} handleDeleteImage={handleDeleteImage} />
+
+                    <div className="bg-white p-6 rounded-2xl shadow-sm border space-y-4">
+                        <h3 className="font-bold flex items-center gap-2"><Icons.Camera/> ค้นหาด้วยรูป</h3>
+
+                        <input type="file" ref={imgSearchRef} onChange={handleQueryImage} className="hidden" accept="image/*" capture="environment" />
+                        <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4 text-xs text-indigo-800 flex items-start gap-2">
+                            <i className="fa-solid fa-circle-info mt-0.5"></i>
+                            <span>ถ่ายรูปพาร์ทเพื่อค้นหาจากความเหมือนของรูป — ต้องกด "สร้างดัชนีรูป" ก่อนอย่างน้อย 1 ครั้ง (ประมวลผลด้วย AI ในเครื่องคุณเอง ไม่ส่งรูปออกไปไหน)</span>
+                        </div>
+                        <div className="flex flex-wrap gap-2 items-center">
+                            <button onClick={()=>imgSearchRef.current && imgSearchRef.current.click()} disabled={visualBusy} className="bg-indigo-600 text-white px-5 py-3 rounded-xl font-bold flex items-center gap-2 disabled:opacity-50 hover:bg-indigo-700">
+                                <i className="fa-solid fa-camera"></i> ถ่าย/เลือกรูปเพื่อค้นหา
+                            </button>
+                            <button onClick={buildIndex} disabled={visualBusy} className="bg-white border px-4 py-3 rounded-xl font-bold text-slate-600 flex items-center gap-2 disabled:opacity-50 hover:bg-slate-50">
+                                <i className="fa-solid fa-database"></i> สร้าง/อัปเดตดัชนีรูป
+                            </button>
+                            <span className="text-xs text-slate-500">มีรูป {Object.keys(partImages).length} · ทำดัชนีแล้ว {Object.keys(embeddings).length}</span>
+                        </div>
+                        {visualBusy && (
+                            <div className="text-sm text-slate-600 flex items-center gap-2">
+                                <div className="loader" style={{width:16,height:16,borderWidth:2}}></div>
+                                <span>{visualMsg}{indexProg.total ? ` (${indexProg.done}/${indexProg.total})` : ''}</span>
+                            </div>
+                        )}
+                        {(queryPreview || visualResults) && (
+                            <div className="flex flex-col sm:flex-row gap-4 items-start">
+                                {queryPreview && (
+                                    <div className="shrink-0">
+                                        <div className="text-[10px] text-slate-400 mb-1">รูปที่ค้นหา</div>
+                                        <img src={queryPreview} alt="query" className="w-28 h-28 object-cover rounded-lg border" />
+                                    </div>
+                                )}
+                                <div className="flex-1 w-full">
+                                    {visualResults && visualResults.length > 0 ? (
+                                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                                            {visualResults.map((r,i)=>(
+                                                <div key={i} className="border rounded-xl p-2 hover:shadow-md transition">
+                                                    {partImages[r.partNo]?.fileId ? (
+                                                        <DriveImg src={imgSrcFor(r.partNo)} fileId={partImages[r.partNo]?.fileId} size={400}
+                                                            onClick={()=>setLightbox({partNo:r.partNo, src: imgSrcFor(r.partNo,1600)})}
+                                                            className="w-full h-24 object-cover rounded-lg border mb-2 cursor-zoom-in" />
+                                                    ) : <div className="w-full h-24 rounded-lg border mb-2 bg-slate-50"></div>}
+                                                    <div className="font-mono font-bold text-blue-600 text-xs truncate">{r.partNo}</div>
+                                                    <div className="text-[11px] text-slate-500 truncate" title={r.name}>{r.name}</div>
+                                                    <div className="mt-1 h-1.5 bg-slate-100 rounded overflow-hidden"><div className="h-full bg-indigo-500" style={{width: Math.max(2,Math.round(r.score*100))+'%'}}></div></div>
+                                                    <div className="text-[10px] text-slate-400 text-right">{Math.round(r.score*100)}%</div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ) : (visualResults && !visualBusy) ? (
+                                        <div className="text-center text-slate-400 py-8">ไม่พบพาร์ทที่ใกล้เคียง</div>
+                                    ) : null}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        };
+
         const DashboardView = ({ inventory, transactions, toInventory }) => {
             const totalItems = inventory.length;
             const lowStockItems = inventory.filter(i => i.qty <= (i.minStock || 0));
