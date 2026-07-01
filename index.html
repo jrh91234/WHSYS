@@ -606,6 +606,7 @@
         // embeddings: partNo -> [{ fileId, vector }] — พาร์ทเดียวกันมีได้หลายรูป/หลายมุม คะแนนของพาร์ทคือค่าที่ดีที่สุดในบรรดารูปทั้งหมด
         const NEG_EXAMPLE_PENALTY_WEIGHT = 0.4; // ทุก ๆ 1 หน่วยความคล้ายกับ "ตัวอย่างลบ" จะหักคะแนนพาร์ทนั้น 0.4 หน่วย
         const NEG_EXAMPLE_MAX_PENALTY = 0.25;   // เพดานหักคะแนนสูงสุด — กันไม่ให้ตัวอย่างลบตัวเดียว (เช่นกดพลาด) ลบคะแนนบวกที่สูงจริง ๆ จนหลุดผลค้นหาไปเลย
+        const REJECT_DISABLED_ABOVE_SCORE = 0.6; // ความเหมือนสูงกว่านี้ถือว่าน่าจะถูกจริง ๆ ปิดปุ่ม "ไม่ใช่" กันกดพลาดไปสร้างตัวอย่างลบผิด ๆ
 
         const useVisualSearch = (apiUrl, partImages = {}, partNameMap = {}) => {
             const [embeddings, setEmbeddings] = useState({});
@@ -1793,7 +1794,7 @@
                         <input type="file" ref={imgSearchRef} onChange={(e) => { setFeedbackFor({}); handleQueryImage(e); }} className="hidden" accept="image/*" capture="environment" />
                         <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4 text-xs text-indigo-800 flex items-start gap-2">
                             <i className="fa-solid fa-circle-info mt-0.5"></i>
-                            <span>ถ่ายรูปพาร์ทเพื่อค้นหาจากความเหมือนของรูป — รูปที่อัปใหม่จะถูกสร้างดัชนีให้อัตโนมัติ ส่วนรูปเก่าที่ยังไม่มีดัชนี กดปุ่ม "สร้าง/อัปเดตดัชนีรูป" เพื่อประมวลผลย้อนหลัง (ประมวลผลด้วย AI ในเครื่องคุณเอง ไม่ส่งรูปออกไปไหน) — เจอผลลัพธ์ที่ใช่แล้วกด "ใช่" เพื่อฝึกระบบให้แม่นขึ้น หรือกด "ไม่ใช่" ถ้าผลลัพธ์ผิด เพื่อกันไม่ให้พาร์ทนั้นขึ้นมาสับสนซ้ำอีก (กดผิดใบ กด "เลิกทำ" ได้ทันที)</span>
+                            <span>ถ่ายรูปพาร์ทเพื่อค้นหาจากความเหมือนของรูป — รูปที่อัปใหม่จะถูกสร้างดัชนีให้อัตโนมัติ ส่วนรูปเก่าที่ยังไม่มีดัชนี กดปุ่ม "สร้าง/อัปเดตดัชนีรูป" เพื่อประมวลผลย้อนหลัง (ประมวลผลด้วย AI ในเครื่องคุณเอง ไม่ส่งรูปออกไปไหน) — เจอผลลัพธ์ที่ใช่แล้วกด "ใช่" เพื่อฝึกระบบให้แม่นขึ้น หรือกด "ไม่ใช่" ถ้าผลลัพธ์ผิด เพื่อกันไม่ให้พาร์ทนั้นขึ้นมาสับสนซ้ำอีก (กดผิดใบ กด "เลิกทำ" ได้ทันที) — ผลลัพธ์ที่ความเหมือนเกิน 60% จะกด "ไม่ใช่" ไม่ได้ เพราะน่าจะถูกจริง ๆ อยู่แล้ว กันกดพลาด</span>
                         </div>
                         <div className="flex flex-wrap gap-2 items-center">
                             <button onClick={()=>imgSearchRef.current && imgSearchRef.current.click()} disabled={visualBusy} className="bg-indigo-600 text-white px-5 py-3 rounded-xl font-bold flex items-center gap-2 disabled:opacity-50 hover:bg-indigo-700">
@@ -1878,6 +1879,12 @@
                                                                 เลิกทำ
                                                             </button>
                                                         </div>
+                                                    ) : r.score >= REJECT_DISABLED_ABOVE_SCORE ? (
+                                                        <button onClick={() => handleConfirmMatch(r.partNo)} disabled={submittingFeedback}
+                                                            title="ยืนยันว่ารูปที่ค้นหาคือพาร์ทนี้ เพื่อนำไปฝึกระบบให้แม่นขึ้น"
+                                                            className="mt-2 w-full bg-emerald-600 text-white text-[10px] font-bold py-1.5 rounded-lg hover:bg-emerald-700 disabled:opacity-50">
+                                                            ใช่ ✓
+                                                        </button>
                                                     ) : (
                                                         <div className="mt-2 grid grid-cols-2 gap-1">
                                                             <button onClick={() => handleConfirmMatch(r.partNo)} disabled={submittingFeedback}
