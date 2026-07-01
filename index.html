@@ -611,6 +611,7 @@
             const [visualMsg, setVisualMsg] = useState("");
             const [indexProg, setIndexProg] = useState({ done: 0, total: 0 });
             const [queryPreview, setQueryPreview] = useState("");
+            const [queryFile, setQueryFile] = useState(null); // ไฟล์รูปที่ใช้ค้นหาล่าสุด — เก็บไว้เผื่อ user ยืนยันแล้วอยากบันทึกเป็นรูปของพาร์ทนั้นเลย
             const [visualResults, setVisualResults] = useState(null);
 
             const loadEmbeddings = React.useCallback(async () => {
@@ -676,7 +677,7 @@
                 const file = e.target.files[0]; e.target.value = "";
                 if (!file) return;
                 if (Object.keys(embeddings).length === 0) return alert("ยังไม่มีดัชนีรูป — กดปุ่ม 'สร้าง/อัปเดตดัชนีรูป' ก่อน");
-                setVisualBusy(true); setVisualMsg("กำลังวิเคราะห์รูป..."); setVisualResults(null);
+                setVisualBusy(true); setVisualMsg("กำลังวิเคราะห์รูป..."); setVisualResults(null); setQueryFile(file);
                 try {
                     const dataUrl = await new Promise((res) => { const r = new FileReader(); r.onload = ev => res(ev.target.result); r.readAsDataURL(file); });
                     setQueryPreview(dataUrl);
@@ -698,7 +699,7 @@
 
             return {
                 embeddings, embLoaded, visualBusy, visualMsg, indexProg,
-                queryPreview, setQueryPreview, visualResults, setVisualResults,
+                queryPreview, setQueryPreview, queryFile, visualResults, setVisualResults,
                 buildIndex, handleQueryImage
             };
         };
@@ -769,6 +770,29 @@
                 }
             };
 
+            // อัปโหลดรูปเดี่ยว ๆ ให้พาร์ทหนึ่ง ๆ: resize -> upload -> เพิ่มเข้า partImages -> สร้างดัชนีอัตโนมัติเบื้องหลัง
+            // แยกออกมาต่างหากเพื่อให้เรียกใช้ตรง ๆ ได้ (เช่น ตอนยืนยันผลค้นหาด้วยรูปว่าใช่พาร์ทนี้) ไม่ต้องผ่าน input ไฟล์เสมอไป
+            const uploadOneImage = async (partNo, file) => {
+                const { dataUrl, base64 } = await resizeToJpeg(file);
+                const res = await fetch(apiUrl, {
+                    method: "POST",
+                    headers: { "Content-Type": "text/plain;charset=utf-8" },
+                    body: JSON.stringify({ action: "upload_part_image", partNo, imageData: base64, mimeType: "image/jpeg", user: currentUser?.name || "-" })
+                });
+                const json = await res.json();
+                if (json.status !== "success" || !json.fileId) throw new Error(json.message || "อัปโหลดไม่สำเร็จ");
+
+                setLocalPreviews(prev => ({ ...prev, [json.fileId]: dataUrl })); // โชว์ทันทีระหว่างรอ Drive สร้าง thumbnail
+                if (setPartImages) {
+                    setPartImages(prev => ({
+                        ...prev,
+                        [partNo]: [...(prev[partNo] || []), { fileId: json.fileId, url: json.url, updatedAt: new Date().toISOString(), user: currentUser?.name || "-" }]
+                    }));
+                }
+                autoIndexUpload(partNo, json.fileId, dataUrl); // สร้างดัชนีให้เองเบื้องหลัง ไม่ต้องรอ ไม่บล็อก UI
+                return json;
+            };
+
             // รองรับเลือกได้หลายไฟล์พร้อมกัน (จากคลังรูป) — อัปทีละไฟล์ ไฟล์ไหนพังก็ข้ามไปไฟล์ถัดไป
             const handleImageFile = async (e) => {
                 const files = Array.from(e.target.files || []);
@@ -781,27 +805,8 @@
                 setUploadingPart(partNo);
                 try {
                     for (const file of imageFiles) {
-                        try {
-                            const { dataUrl, base64 } = await resizeToJpeg(file);
-                            const res = await fetch(apiUrl, {
-                                method: "POST",
-                                headers: { "Content-Type": "text/plain;charset=utf-8" },
-                                body: JSON.stringify({ action: "upload_part_image", partNo, imageData: base64, mimeType: "image/jpeg", user: currentUser?.name || "-" })
-                            });
-                            const json = await res.json();
-                            if (json.status !== "success" || !json.fileId) throw new Error(json.message || "อัปโหลดไม่สำเร็จ");
-
-                            setLocalPreviews(prev => ({ ...prev, [json.fileId]: dataUrl })); // โชว์ทันทีระหว่างรอ Drive สร้าง thumbnail
-                            if (setPartImages) {
-                                setPartImages(prev => ({
-                                    ...prev,
-                                    [partNo]: [...(prev[partNo] || []), { fileId: json.fileId, url: json.url, updatedAt: new Date().toISOString(), user: currentUser?.name || "-" }]
-                                }));
-                            }
-                            autoIndexUpload(partNo, json.fileId, dataUrl); // สร้างดัชนีให้เองเบื้องหลัง ไม่ต้องรอ ไม่บล็อก UI
-                        } catch (err) {
-                            alert(`อัปโหลดรูปไม่สำเร็จ (${file.name}): ` + err.message);
-                        }
+                        try { await uploadOneImage(partNo, file); }
+                        catch (err) { alert(`อัปโหลดรูปไม่สำเร็จ (${file.name}): ` + err.message); }
                     }
                 } finally {
                     setUploadingPart("");
@@ -846,7 +851,7 @@
 
             return {
                 imgFileRef, uploadingPart, lightbox, setLightbox, namePopup, setNamePopup,
-                pickImageFor, handleImageFile, handleDeleteImage,
+                pickImageFor, handleImageFile, handleDeleteImage, uploadOneImage,
                 imagesFor, imgSrcFor, imgSrcForFile, coverFileId
             };
         };
@@ -1660,15 +1665,33 @@
             const imgSearchRef = useRef(null);
             const {
                 embeddings, visualBusy, visualMsg, indexProg,
-                queryPreview, visualResults,
+                queryPreview, queryFile, visualResults,
                 buildIndex, handleQueryImage
             } = useVisualSearch(apiUrl, partImages, partNameMap);
 
             const {
                 imgFileRef, lightbox, setLightbox, namePopup, setNamePopup,
-                pickImageFor, handleImageFile, handleDeleteImage,
+                pickImageFor, handleImageFile, handleDeleteImage, uploadOneImage,
                 imagesFor, imgSrcFor, imgSrcForFile, coverFileId
             } = usePartImageManager(apiUrl, partImages, setPartImages, currentUser);
+
+            const [confirming, setConfirming] = useState(false);
+            const [confirmedFor, setConfirmedFor] = useState("");
+
+            // ยืนยันว่ารูปที่ค้นหาคือพาร์ทนี้จริง -> บันทึกรูปนั้นเป็นรูปของพาร์ทเพิ่มอีก 1 รูป
+            // แล้วสร้างดัชนีให้อัตโนมัติ (เหมือนอัปโหลดรูปปกติ) เพื่อให้ค้นหาครั้งถัดไปแม่นขึ้น
+            const handleConfirmMatch = async (partNo) => {
+                if (!queryFile || confirming) return;
+                setConfirming(true);
+                try {
+                    await uploadOneImage(partNo, queryFile);
+                    setConfirmedFor(partNo);
+                } catch (err) {
+                    alert("บันทึกรูปไม่สำเร็จ: " + err.message);
+                } finally {
+                    setConfirming(false);
+                }
+            };
 
             return (
                 <div className="animate-fade-in space-y-6">
@@ -1679,10 +1702,10 @@
                     <div className="bg-white p-6 rounded-2xl shadow-sm border space-y-4">
                         <h3 className="font-bold flex items-center gap-2"><Icons.Camera/> ค้นหาด้วยรูป</h3>
 
-                        <input type="file" ref={imgSearchRef} onChange={handleQueryImage} className="hidden" accept="image/*" capture="environment" />
+                        <input type="file" ref={imgSearchRef} onChange={(e) => { setConfirmedFor(""); handleQueryImage(e); }} className="hidden" accept="image/*" capture="environment" />
                         <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4 text-xs text-indigo-800 flex items-start gap-2">
                             <i className="fa-solid fa-circle-info mt-0.5"></i>
-                            <span>ถ่ายรูปพาร์ทเพื่อค้นหาจากความเหมือนของรูป — รูปที่อัปใหม่จะถูกสร้างดัชนีให้อัตโนมัติ ส่วนรูปเก่าที่ยังไม่มีดัชนี กดปุ่ม "สร้าง/อัปเดตดัชนีรูป" เพื่อประมวลผลย้อนหลัง (ประมวลผลด้วย AI ในเครื่องคุณเอง ไม่ส่งรูปออกไปไหน)</span>
+                            <span>ถ่ายรูปพาร์ทเพื่อค้นหาจากความเหมือนของรูป — รูปที่อัปใหม่จะถูกสร้างดัชนีให้อัตโนมัติ ส่วนรูปเก่าที่ยังไม่มีดัชนี กดปุ่ม "สร้าง/อัปเดตดัชนีรูป" เพื่อประมวลผลย้อนหลัง (ประมวลผลด้วย AI ในเครื่องคุณเอง ไม่ส่งรูปออกไปไหน) — เจอผลลัพธ์ที่ใช่แล้วกด "ใช่พาร์ทนี้" เพื่อบันทึกรูปนั้นไว้ฝึกระบบให้แม่นขึ้นในครั้งถัดไป</span>
                         </div>
                         <div className="flex flex-wrap gap-2 items-center">
                             <button onClick={()=>imgSearchRef.current && imgSearchRef.current.click()} disabled={visualBusy} className="bg-indigo-600 text-white px-5 py-3 rounded-xl font-bold flex items-center gap-2 disabled:opacity-50 hover:bg-indigo-700">
@@ -1724,6 +1747,15 @@
                                                     <div className="text-[11px] text-slate-500 truncate" title={r.name}>{r.name}</div>
                                                     <div className="mt-1 h-1.5 bg-slate-100 rounded overflow-hidden"><div className="h-full bg-indigo-500" style={{width: Math.max(2,Math.round(r.score*100))+'%'}}></div></div>
                                                     <div className="text-[10px] text-slate-400 text-right">{Math.round(r.score*100)}%</div>
+                                                    {confirmedFor === r.partNo ? (
+                                                        <div className="mt-2 text-[10px] text-emerald-600 font-bold text-center"><i className="fa-solid fa-check mr-1"></i>บันทึกไว้ฝึกระบบแล้ว</div>
+                                                    ) : (
+                                                        <button onClick={() => handleConfirmMatch(r.partNo)} disabled={confirming}
+                                                            title="ยืนยันว่ารูปที่ค้นหาคือพาร์ทนี้ เพื่อนำไปฝึกระบบให้แม่นขึ้น"
+                                                            className="mt-2 w-full bg-emerald-600 text-white text-[10px] font-bold py-1.5 rounded-lg hover:bg-emerald-700 disabled:opacity-50">
+                                                            ใช่พาร์ทนี้ ✓
+                                                        </button>
+                                                    )}
                                                 </div>
                                             ))}
                                         </div>
