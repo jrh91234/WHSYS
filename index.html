@@ -83,7 +83,66 @@
             return <img src={cur} alt={alt} className={className} loading="lazy" referrerPolicy="no-referrer" onClick={onClick} onError={handleError} />;
         };
 
-        const DEFAULT_API_URL = "https://script.google.com/macros/s/AKfycby923XbLtP0TxMmKNG1JyhmtZeMNNALNCCJLXWr1GI70NYH0h7AI27c7yP2-L3h9Ne_zQ/exec"; 
+        // ===== ค้นหาด้วยรูป (Visual Search) — TensorFlow.js + MobileNet (โหลดตอนใช้งานเท่านั้น) =====
+        let __visionModel = null;
+        const loadVisionModel = () => {
+            if (__visionModel) return __visionModel;
+            const loadScript = (src) => new Promise((res, rej) => {
+                const s = document.createElement('script');
+                s.src = src; s.async = true;
+                s.onload = () => res();
+                s.onerror = () => rej(new Error('โหลดสคริปต์ AI ไม่สำเร็จ (ตรวจอินเทอร์เน็ต): ' + src));
+                document.head.appendChild(s);
+            });
+            __visionModel = (async () => {
+                if (!window.tf) await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js');
+                if (!window.mobilenet) await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow-models/mobilenet@2.1.1/dist/mobilenet.min.js');
+                return await window.mobilenet.load({ version: 2, alpha: 1.0 });
+            })().catch((e) => { __visionModel = null; throw e; });
+            return __visionModel;
+        };
+        const l2normalize = (v) => {
+            let s = 0; for (let i = 0; i < v.length; i++) s += v[i] * v[i];
+            s = Math.sqrt(s) || 1;
+            const o = new Float32Array(v.length);
+            for (let i = 0; i < v.length; i++) o[i] = v[i] / s;
+            return o;
+        };
+        const embedImageEl = async (model, imgEl) => {
+            const t = model.infer(imgEl, true); // embedding vector
+            const data = await t.data();
+            if (t.dispose) t.dispose();
+            return l2normalize(Float32Array.from(data));
+        };
+        // เก็บเวกเตอร์แบบ int8 (quantize) → base64 เพื่อประหยัดพื้นที่ในชีต
+        const embToB64 = (vec) => {
+            const q = new Int8Array(vec.length);
+            for (let i = 0; i < vec.length; i++) { let x = Math.round(vec[i] * 127); q[i] = x > 127 ? 127 : (x < -127 ? -127 : x); }
+            const bytes = new Uint8Array(q.buffer);
+            let bin = ''; for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+            return btoa(bin);
+        };
+        const b64ToEmb = (str) => {
+            try {
+                const bin = atob(str);
+                const bytes = new Uint8Array(bin.length);
+                for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+                const q = new Int8Array(bytes.buffer);
+                const o = new Float32Array(q.length);
+                for (let i = 0; i < q.length; i++) o[i] = q[i] / 127;
+                return o;
+            } catch (e) { return null; }
+        };
+        const cosineSim = (a, b) => { let s = 0; const n = Math.min(a.length, b.length); for (let i = 0; i < n; i++) s += a[i] * b[i]; return s; };
+        const fileToImageEl = (file) => new Promise((res, rej) => {
+            const r = new FileReader();
+            r.onerror = () => rej(new Error('อ่านไฟล์ไม่ได้'));
+            r.onload = (e) => { const img = new Image(); img.onload = () => res(img); img.onerror = () => rej(new Error('รูปเสียหาย')); img.src = e.target.result; };
+            r.readAsDataURL(file);
+        });
+        const dataUrlToImageEl = (u) => new Promise((res, rej) => { const img = new Image(); img.onload = () => res(img); img.onerror = () => rej(new Error('รูปเสียหาย')); img.src = u; });
+
+        const DEFAULT_API_URL ="https://script.google.com/macros/s/AKfycby923XbLtP0TxMmKNG1JyhmtZeMNNALNCCJLXWr1GI70NYH0h7AI27c7yP2-L3h9Ne_zQ/exec"; 
         
         const INITIAL_INVENTORY = [
             { partNo: "DEMO-001", name: "สินค้าตัวอย่าง (กำลังเชื่อมต่อ Cloud...)", qty: 0, location: "-", unit: "PCS", minStock: 0 }
@@ -530,6 +589,16 @@
             const [lightbox, setLightbox] = useState(null);          // { partNo, src }
             const [namePopup, setNamePopup] = useState(null);        // { partNo, name } เมนูเด้งตอนกดชื่อพาร์ท
 
+            // --- Visual Search (ค้นหาด้วยรูป) ---
+            const imgSearchRef = useRef(null);
+            const [embeddings, setEmbeddings] = useState({});        // partNo -> Float32Array
+            const [embLoaded, setEmbLoaded] = useState(false);
+            const [visualBusy, setVisualBusy] = useState(false);
+            const [visualMsg, setVisualMsg] = useState("");
+            const [indexProg, setIndexProg] = useState({ done: 0, total: 0 });
+            const [queryPreview, setQueryPreview] = useState("");
+            const [visualResults, setVisualResults] = useState(null);
+
             const resizeToJpeg = (file, maxDim = 1280, quality = 0.82) => {
                 return new Promise((resolve, reject) => {
                     const reader = new FileReader();
@@ -873,6 +942,86 @@
                 exportTableToPDF("Part Search: " + (searchPartQuery || ""), headers, rows);
             };
 
+            // แผนที่ Part No -> ชื่อ (จาก inventory + ทุกชีต BOM) สำหรับแสดงผลค้นหาด้วยรูป
+            const partNameMap = useMemo(() => {
+                const m = {};
+                (inventory || []).forEach(it => { const p = String(it.partNo || "").trim(); if (p && !m[p]) m[p] = it.name || ""; });
+                Object.keys(bomData || {}).forEach(sh => {
+                    (bomData[sh] || []).slice(1).forEach(row => {
+                        const p = String(row[pNoCol] || "").trim();
+                        if (p && !m[p]) m[p] = String(row[nameCol] || "");
+                    });
+                });
+                return m;
+            }, [inventory, bomData, pNoCol, nameCol]);
+
+            const loadEmbeddings = async () => {
+                if (!apiUrl) { setEmbLoaded(true); return; }
+                try {
+                    const res = await fetch(apiUrl + "?action=getEmbeddings&t=" + Date.now());
+                    const json = await res.json();
+                    const out = {};
+                    Object.keys(json.embeddings || {}).forEach(p => { const v = b64ToEmb(json.embeddings[p]); if (v) out[p] = v; });
+                    setEmbeddings(out);
+                } catch (e) { console.log("load embeddings failed", e); }
+                finally { setEmbLoaded(true); }
+            };
+            useEffect(() => { if (mode === 'visual' && !embLoaded) loadEmbeddings(); }, [mode]);
+
+            // สร้าง/อัปเดตดัชนี: ดึงรูปเดิมจาก Drive (ผ่าน proxy) มาแปลงเป็นเวกเตอร์แล้วบันทึก
+            const buildIndex = async () => {
+                if (!apiUrl) return alert("ยังไม่ได้ตั้งค่า API URL");
+                const targets = Object.keys(partImages).filter(p => partImages[p] && partImages[p].fileId && !embeddings[p]);
+                if (targets.length === 0) return alert("ดัชนีรูปครบแล้ว — ไม่มีรูปใหม่ให้ประมวลผล");
+                setVisualBusy(true); setVisualMsg("กำลังโหลดโมเดล AI (ครั้งแรกอาจนานหน่อย)..."); setIndexProg({ done: 0, total: targets.length });
+                try {
+                    const model = await loadVisionModel();
+                    const newEmb = { ...embeddings };
+                    const toSave = [];
+                    for (let i = 0; i < targets.length; i++) {
+                        const p = targets[i];
+                        setVisualMsg("กำลังประมวลผลรูปพาร์ท..."); setIndexProg({ done: i, total: targets.length });
+                        try {
+                            const res = await fetch(apiUrl, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ action: "get_image_b64", fileId: partImages[p].fileId }) });
+                            const json = await res.json();
+                            if (json.status !== "success" || !json.base64) continue;
+                            const img = await dataUrlToImageEl("data:" + (json.mimeType || "image/jpeg") + ";base64," + json.base64);
+                            const vec = await embedImageEl(model, img);
+                            newEmb[p] = vec;
+                            toSave.push({ partNo: p, embedding: embToB64(vec) });
+                        } catch (err) { console.log("index fail", p, err); }
+                    }
+                    setIndexProg({ done: targets.length, total: targets.length });
+                    if (toSave.length) {
+                        setVisualMsg("กำลังบันทึกดัชนี...");
+                        await fetch(apiUrl, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ action: "save_embeddings", items: toSave }) });
+                    }
+                    setEmbeddings(newEmb);
+                    alert("สร้างดัชนีรูปเสร็จ: " + toSave.length + " รายการ");
+                } catch (e) {
+                    alert("สร้างดัชนีไม่สำเร็จ: " + e.message);
+                } finally { setVisualBusy(false); setVisualMsg(""); }
+            };
+
+            const handleQueryImage = async (e) => {
+                const file = e.target.files[0]; e.target.value = "";
+                if (!file) return;
+                if (Object.keys(embeddings).length === 0) return alert("ยังไม่มีดัชนีรูป — กดปุ่ม 'สร้าง/อัปเดตดัชนีรูป' ก่อน");
+                setVisualBusy(true); setVisualMsg("กำลังวิเคราะห์รูป..."); setVisualResults(null);
+                try {
+                    const dataUrl = await new Promise((res) => { const r = new FileReader(); r.onload = ev => res(ev.target.result); r.readAsDataURL(file); });
+                    setQueryPreview(dataUrl);
+                    const model = await loadVisionModel();
+                    const img = await fileToImageEl(file);
+                    const q = await embedImageEl(model, img);
+                    const scored = Object.keys(embeddings).map(p => ({ partNo: p, name: partNameMap[p] || "", score: cosineSim(q, embeddings[p]) }));
+                    scored.sort((a, b) => b.score - a.score);
+                    setVisualResults(scored.slice(0, 12));
+                } catch (err) {
+                    alert("ค้นหาด้วยรูปไม่สำเร็จ: " + err.message);
+                } finally { setVisualBusy(false); setVisualMsg(""); }
+            };
+
             const requestSort = (key) => {
                 let direction = 'ascending';
                 if (sortConfig.key === key && sortConfig.direction === 'ascending') {
@@ -1074,6 +1223,7 @@
                                  <button onClick={()=>setMode('plan')} className={`pb-2 px-2 text-sm font-bold whitespace-nowrap transition ${mode==='plan'?'border-b-2 border-blue-600 text-blue-600':'text-slate-400 hover:text-slate-600'}`}><Icons.Production className="mr-1"/> Production Plan</button>
                                  <button onClick={()=>setMode('compare')} className={`pb-2 px-2 text-sm font-bold whitespace-nowrap transition ${mode==='compare'?'border-b-2 border-purple-600 text-purple-600':'text-slate-400 hover:text-slate-600'}`}><Icons.Compare className="mr-1"/> BOM Compare</button>
                                  <button onClick={()=>setMode('search')} className={`pb-2 px-2 text-sm font-bold whitespace-nowrap transition ${mode==='search'?'border-b-2 border-orange-500 text-orange-500':'text-slate-400 hover:text-slate-600'}`}><Icons.Search className="mr-1"/> Search Part</button>
+                                 <button onClick={()=>setMode('visual')} className={`pb-2 px-2 text-sm font-bold whitespace-nowrap transition ${mode==='visual'?'border-b-2 border-indigo-500 text-indigo-500':'text-slate-400 hover:text-slate-600'}`}><i className="fa-solid fa-camera mr-1"></i> ค้นหาด้วยรูป</button>
                              </div>
                             
                             {mode === 'plan' && (
@@ -1209,6 +1359,62 @@
                                                         )}
                                                     </tbody>
                                                 </table>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
+                            {mode === 'visual' && (
+                                <div className="animate-fade-in space-y-4">
+                                    <input type="file" ref={imgSearchRef} onChange={handleQueryImage} className="hidden" accept="image/*" capture="environment" />
+                                    <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4 text-xs text-indigo-800 flex items-start gap-2">
+                                        <i className="fa-solid fa-circle-info mt-0.5"></i>
+                                        <span>ถ่ายรูปพาร์ทเพื่อค้นหาจากความเหมือนของรูป — ต้องกด "สร้างดัชนีรูป" ก่อนอย่างน้อย 1 ครั้ง (ประมวลผลด้วย AI ในเครื่องคุณเอง ไม่ส่งรูปออกไปไหน)</span>
+                                    </div>
+                                    <div className="flex flex-wrap gap-2 items-center">
+                                        <button onClick={()=>imgSearchRef.current && imgSearchRef.current.click()} disabled={visualBusy} className="bg-indigo-600 text-white px-5 py-3 rounded-xl font-bold flex items-center gap-2 disabled:opacity-50 hover:bg-indigo-700">
+                                            <i className="fa-solid fa-camera"></i> ถ่าย/เลือกรูปเพื่อค้นหา
+                                        </button>
+                                        <button onClick={buildIndex} disabled={visualBusy} className="bg-white border px-4 py-3 rounded-xl font-bold text-slate-600 flex items-center gap-2 disabled:opacity-50 hover:bg-slate-50">
+                                            <i className="fa-solid fa-database"></i> สร้าง/อัปเดตดัชนีรูป
+                                        </button>
+                                        <span className="text-xs text-slate-500">มีรูป {Object.keys(partImages).length} · ทำดัชนีแล้ว {Object.keys(embeddings).length}</span>
+                                    </div>
+                                    {visualBusy && (
+                                        <div className="text-sm text-slate-600 flex items-center gap-2">
+                                            <div className="loader" style={{width:16,height:16,borderWidth:2}}></div>
+                                            <span>{visualMsg}{indexProg.total ? ` (${indexProg.done}/${indexProg.total})` : ''}</span>
+                                        </div>
+                                    )}
+                                    {(queryPreview || visualResults) && (
+                                        <div className="flex flex-col sm:flex-row gap-4 items-start">
+                                            {queryPreview && (
+                                                <div className="shrink-0">
+                                                    <div className="text-[10px] text-slate-400 mb-1">รูปที่ค้นหา</div>
+                                                    <img src={queryPreview} alt="query" className="w-28 h-28 object-cover rounded-lg border" />
+                                                </div>
+                                            )}
+                                            <div className="flex-1 w-full">
+                                                {visualResults && visualResults.length > 0 ? (
+                                                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                                                        {visualResults.map((r,i)=>(
+                                                            <div key={i} className="border rounded-xl p-2 hover:shadow-md transition">
+                                                                {partImages[r.partNo]?.fileId ? (
+                                                                    <DriveImg src={imgSrcFor(r.partNo)} fileId={partImages[r.partNo]?.fileId} size={400}
+                                                                        onClick={()=>setLightbox({partNo:r.partNo, src: imgSrcFor(r.partNo,1600)})}
+                                                                        className="w-full h-24 object-cover rounded-lg border mb-2 cursor-zoom-in" />
+                                                                ) : <div className="w-full h-24 rounded-lg border mb-2 bg-slate-50"></div>}
+                                                                <div className="font-mono font-bold text-blue-600 text-xs truncate">{r.partNo}</div>
+                                                                <div className="text-[11px] text-slate-500 truncate" title={r.name}>{r.name}</div>
+                                                                <div className="mt-1 h-1.5 bg-slate-100 rounded overflow-hidden"><div className="h-full bg-indigo-500" style={{width: Math.max(2,Math.round(r.score*100))+'%'}}></div></div>
+                                                                <div className="text-[10px] text-slate-400 text-right">{Math.round(r.score*100)}%</div>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                ) : (visualResults && !visualBusy) ? (
+                                                    <div className="text-center text-slate-400 py-8">ไม่พบพาร์ทที่ใกล้เคียง</div>
+                                                ) : null}
                                             </div>
                                         </div>
                                     )}
