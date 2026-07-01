@@ -551,12 +551,13 @@
         };
 
         // ===== ค้นหาพาร์ท (Search Part) — แยกออกมาเป็นฟังก์ชันเดี่ยว ไม่ฝังลึกอยู่ใน AdvancedMRPView =====
-        const usePartSearch = (bomData, sheetNames, { pNoCol, nameCol, qtyCol, typeCol }) => {
+        const usePartSearch = (bomData, sheetNames = [], { pNoCol, nameCol, qtyCol, typeCol } = {}) => {
             const [searchPartQuery, setSearchPartQuery] = useState("");
             const [partSearchResults, setPartSearchResults] = useState(null);
 
             const handlePartSearch = () => {
                 if (!searchPartQuery.trim()) return alert("กรุณาพิมพ์คำค้นหา");
+                if (!bomData) return;
 
                 const results = [];
                 const term = searchPartQuery.toLowerCase();
@@ -588,7 +589,7 @@
         };
 
         // ===== ค้นหาด้วยรูป (Visual Search) — แยกออกมาเป็นฟังก์ชันเดี่ยว ไม่ฝังลึกอยู่ใน AdvancedMRPView =====
-        const useVisualSearch = (apiUrl, partImages, partNameMap, mode) => {
+        const useVisualSearch = (apiUrl, partImages = {}, partNameMap = {}, mode) => {
             const [embeddings, setEmbeddings] = useState({});        // partNo -> Float32Array
             const [embLoaded, setEmbLoaded] = useState(false);
             const [visualBusy, setVisualBusy] = useState(false);
@@ -597,7 +598,7 @@
             const [queryPreview, setQueryPreview] = useState("");
             const [visualResults, setVisualResults] = useState(null);
 
-            const loadEmbeddings = async () => {
+            const loadEmbeddings = React.useCallback(async () => {
                 if (!apiUrl) { setEmbLoaded(true); return; }
                 try {
                     const res = await fetch(apiUrl + "?action=getEmbeddings&t=" + Date.now());
@@ -607,8 +608,8 @@
                     setEmbeddings(out);
                 } catch (e) { console.log("load embeddings failed", e); }
                 finally { setEmbLoaded(true); }
-            };
-            useEffect(() => { if (mode === 'visual' && !embLoaded) loadEmbeddings(); }, [mode]);
+            }, [apiUrl]);
+            useEffect(() => { if (mode === 'visual' && !embLoaded) loadEmbeddings(); }, [mode, embLoaded, loadEmbeddings]);
 
             // สร้าง/อัปเดตดัชนี: ดึงรูปเดิมจาก Drive (ผ่าน proxy) มาแปลงเป็นเวกเตอร์แล้วบันทึก
             const buildIndex = async () => {
