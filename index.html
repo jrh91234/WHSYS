@@ -1016,7 +1016,8 @@
                     const q = await embedImageEl(model, img);
                     const scored = Object.keys(embeddings).map(p => ({ partNo: p, name: partNameMap[p] || "", score: cosineSim(q, embeddings[p]) }));
                     scored.sort((a, b) => b.score - a.score);
-                    setVisualResults(scored.slice(0, 12));
+                    const filtered = scored.filter(r => r.score >= 0.5); // ตัดผลที่ความเหมือนต่ำกว่า 50% ทิ้ง
+                    setVisualResults(filtered.slice(0, 12));
                 } catch (err) {
                     alert("ค้นหาด้วยรูปไม่สำเร็จ: " + err.message);
                 } finally { setVisualBusy(false); setVisualMsg(""); }
