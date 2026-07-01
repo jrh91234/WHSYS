@@ -604,7 +604,8 @@
 
         // ===== ค้นหาด้วยรูป (Visual Search) — แยกออกมาเป็นฟังก์ชันเดี่ยว ไม่ฝังลึกอยู่ใน AdvancedMRPView =====
         // embeddings: partNo -> [{ fileId, vector }] — พาร์ทเดียวกันมีได้หลายรูป/หลายมุม คะแนนของพาร์ทคือค่าที่ดีที่สุดในบรรดารูปทั้งหมด
-        const NEG_EXAMPLE_PENALTY_WEIGHT = 0.6; // ทุก ๆ 1 หน่วยความคล้ายกับ "ตัวอย่างลบ" จะหักคะแนนพาร์ทนั้น 0.6 หน่วย
+        const NEG_EXAMPLE_PENALTY_WEIGHT = 0.4; // ทุก ๆ 1 หน่วยความคล้ายกับ "ตัวอย่างลบ" จะหักคะแนนพาร์ทนั้น 0.4 หน่วย
+        const NEG_EXAMPLE_MAX_PENALTY = 0.25;   // เพดานหักคะแนนสูงสุด — กันไม่ให้ตัวอย่างลบตัวเดียว (เช่นกดพลาด) ลบคะแนนบวกที่สูงจริง ๆ จนหลุดผลค้นหาไปเลย
 
         const useVisualSearch = (apiUrl, partImages = {}, partNameMap = {}) => {
             const [embeddings, setEmbeddings] = useState({});
@@ -702,8 +703,10 @@
                     setQueryEmbedding(q);
                     const scored = Object.keys(embeddings).map(p => {
                         const posScore = Math.max(...embeddings[p].map(it => cosineSim(q, it.vector)));
-                        const negPenalty = negatives[p] ? Math.max(0, ...negatives[p].map(v => cosineSim(q, v))) : 0;
-                        return { partNo: p, name: partNameMap[p] || "", score: posScore - negPenalty * NEG_EXAMPLE_PENALTY_WEIGHT };
+                        const negSim = negatives[p] ? Math.max(0, ...negatives[p].map(v => cosineSim(q, v))) : 0;
+                        // จำกัดเพดานการหักคะแนน กันไม่ให้ตัวอย่างลบเพียงอันเดียว (เช่นกดพลาด) ลบล้างคะแนนบวกที่สูงจริง ๆ ทิ้งไปทั้งหมด
+                        const penalty = Math.min(negSim * NEG_EXAMPLE_PENALTY_WEIGHT, NEG_EXAMPLE_MAX_PENALTY);
+                        return { partNo: p, name: partNameMap[p] || "", score: posScore - penalty };
                     });
                     scored.sort((a, b) => b.score - a.score);
                     const filtered = scored.filter(r => r.score >= 0.5); // ตัดผลที่ความเหมือนต่ำกว่า 50% ทิ้ง (หลังหักคะแนนตัวอย่างลบแล้ว)
@@ -714,22 +717,47 @@
             };
 
             // ยืนยันว่ารูปที่ค้นหา "ไม่ใช่" พาร์ทนี้ -> เก็บเวกเตอร์ไว้เป็นตัวอย่างลบ เพื่อลดคะแนนพาร์ทนี้ในการค้นหาครั้งถัดไปถ้าเจอรูปคล้ายกันอีก
+            // คืนค่า embedding (base64) กลับไปให้ผู้เรียกเก็บไว้ เผื่อกด "เลิกทำ" ทันทีถ้ากดผิดใบ
             const rejectMatch = async (partNo) => {
-                if (!queryEmbedding) return;
+                if (!queryEmbedding) return null;
                 const embedding = embToB64(queryEmbedding);
                 setNegatives(prev => ({ ...prev, [partNo]: [...(prev[partNo] || []), queryEmbedding] }));
+                if (apiUrl) {
+                    await fetch(apiUrl, {
+                        method: "POST",
+                        headers: { "Content-Type": "text/plain;charset=utf-8" },
+                        body: JSON.stringify({ action: "save_negative_example", partNo, embedding })
+                    });
+                }
+                return embedding;
+            };
+
+            // เลิกทำการ "ไม่ใช่" ล่าสุด (กดผิดใบ) — ลบตัวอย่างลบตัวที่เพิ่งสร้างออกทั้งฝั่งเครื่องและฝั่ง cloud
+            const undoRejectMatch = async (partNo, embedding) => {
+                setNegatives(prev => ({ ...prev, [partNo]: (prev[partNo] || []).filter(v => embToB64(v) !== embedding) }));
                 if (!apiUrl) return;
                 await fetch(apiUrl, {
                     method: "POST",
                     headers: { "Content-Type": "text/plain;charset=utf-8" },
-                    body: JSON.stringify({ action: "save_negative_example", partNo, embedding })
+                    body: JSON.stringify({ action: "delete_negative_example", partNo, embedding })
+                });
+            };
+
+            // ล้างตัวอย่างลบทั้งหมดของพาร์ทหนึ่ง ๆ — ใช้ตอนเคลียร์ของที่กดพลาดไปแล้วในอดีต (ก่อนมีปุ่มเลิกทำ)
+            const clearNegativeExamples = async (partNo) => {
+                setNegatives(prev => { const n = { ...prev }; delete n[partNo]; return n; });
+                if (!apiUrl) return;
+                await fetch(apiUrl, {
+                    method: "POST",
+                    headers: { "Content-Type": "text/plain;charset=utf-8" },
+                    body: JSON.stringify({ action: "clear_negative_examples", partNo })
                 });
             };
 
             return {
-                embeddings, embLoaded, visualBusy, visualMsg, indexProg,
+                embeddings, embLoaded, negatives, visualBusy, visualMsg, indexProg,
                 queryPreview, setQueryPreview, queryFile, queryEmbedding, visualResults, setVisualResults,
-                buildIndex, handleQueryImage, rejectMatch
+                buildIndex, handleQueryImage, rejectMatch, undoRejectMatch, clearNegativeExamples
             };
         };
 
@@ -1693,9 +1721,9 @@
 
             const imgSearchRef = useRef(null);
             const {
-                embeddings, visualBusy, visualMsg, indexProg,
+                embeddings, negatives, visualBusy, visualMsg, indexProg,
                 queryPreview, queryFile, visualResults,
-                buildIndex, handleQueryImage, rejectMatch
+                buildIndex, handleQueryImage, rejectMatch, undoRejectMatch, clearNegativeExamples
             } = useVisualSearch(apiUrl, partImages, partNameMap);
 
             const {
@@ -1705,7 +1733,8 @@
             } = usePartImageManager(apiUrl, partImages, setPartImages, currentUser);
 
             const [submittingFeedback, setSubmittingFeedback] = useState(false);
-            const [feedbackFor, setFeedbackFor] = useState({}); // partNo -> 'yes' | 'no'
+            const [feedbackFor, setFeedbackFor] = useState({}); // partNo -> { type: 'yes'|'no', fileId?, embedding? }
+            const [showNegManager, setShowNegManager] = useState(false);
 
             // ยืนยันว่ารูปที่ค้นหาคือพาร์ทนี้จริง -> บันทึกรูปนั้นเป็นรูปของพาร์ทเพิ่มอีก 1 รูป
             // แล้วสร้างดัชนีให้อัตโนมัติ (เหมือนอัปโหลดรูปปกติ) เพื่อให้ค้นหาครั้งถัดไปแม่นขึ้น
@@ -1713,8 +1742,8 @@
                 if (!queryFile || submittingFeedback) return;
                 setSubmittingFeedback(true);
                 try {
-                    await uploadOneImage(partNo, queryFile);
-                    setFeedbackFor(prev => ({ ...prev, [partNo]: 'yes' }));
+                    const json = await uploadOneImage(partNo, queryFile);
+                    setFeedbackFor(prev => ({ ...prev, [partNo]: { type: 'yes', fileId: json.fileId } }));
                 } catch (err) {
                     alert("บันทึกรูปไม่สำเร็จ: " + err.message);
                 } finally {
@@ -1727,10 +1756,26 @@
                 if (submittingFeedback) return;
                 setSubmittingFeedback(true);
                 try {
-                    await rejectMatch(partNo);
-                    setFeedbackFor(prev => ({ ...prev, [partNo]: 'no' }));
+                    const embedding = await rejectMatch(partNo);
+                    setFeedbackFor(prev => ({ ...prev, [partNo]: { type: 'no', embedding } }));
                 } catch (err) {
                     alert("บันทึกไม่สำเร็จ: " + err.message);
+                } finally {
+                    setSubmittingFeedback(false);
+                }
+            };
+
+            // เลิกทำ "ใช่"/"ไม่ใช่" ล่าสุด — เผื่อกดผิดใบตอนพาร์ทหน้าตาคล้ายกันจนแยกไม่ออก
+            const handleUndoFeedback = async (partNo) => {
+                const fb = feedbackFor[partNo];
+                if (!fb || submittingFeedback) return;
+                setSubmittingFeedback(true);
+                try {
+                    if (fb.type === 'yes' && fb.fileId) await handleDeleteImage(partNo, fb.fileId);
+                    else if (fb.type === 'no' && fb.embedding) await undoRejectMatch(partNo, fb.embedding);
+                    setFeedbackFor(prev => { const n = { ...prev }; delete n[partNo]; return n; });
+                } catch (err) {
+                    alert("เลิกทำไม่สำเร็จ: " + err.message);
                 } finally {
                     setSubmittingFeedback(false);
                 }
@@ -1748,7 +1793,7 @@
                         <input type="file" ref={imgSearchRef} onChange={(e) => { setFeedbackFor({}); handleQueryImage(e); }} className="hidden" accept="image/*" capture="environment" />
                         <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4 text-xs text-indigo-800 flex items-start gap-2">
                             <i className="fa-solid fa-circle-info mt-0.5"></i>
-                            <span>ถ่ายรูปพาร์ทเพื่อค้นหาจากความเหมือนของรูป — รูปที่อัปใหม่จะถูกสร้างดัชนีให้อัตโนมัติ ส่วนรูปเก่าที่ยังไม่มีดัชนี กดปุ่ม "สร้าง/อัปเดตดัชนีรูป" เพื่อประมวลผลย้อนหลัง (ประมวลผลด้วย AI ในเครื่องคุณเอง ไม่ส่งรูปออกไปไหน) — เจอผลลัพธ์ที่ใช่แล้วกด "ใช่" เพื่อฝึกระบบให้แม่นขึ้น หรือกด "ไม่ใช่" ถ้าผลลัพธ์ผิด เพื่อกันไม่ให้พาร์ทนั้นขึ้นมาสับสนซ้ำอีก</span>
+                            <span>ถ่ายรูปพาร์ทเพื่อค้นหาจากความเหมือนของรูป — รูปที่อัปใหม่จะถูกสร้างดัชนีให้อัตโนมัติ ส่วนรูปเก่าที่ยังไม่มีดัชนี กดปุ่ม "สร้าง/อัปเดตดัชนีรูป" เพื่อประมวลผลย้อนหลัง (ประมวลผลด้วย AI ในเครื่องคุณเอง ไม่ส่งรูปออกไปไหน) — เจอผลลัพธ์ที่ใช่แล้วกด "ใช่" เพื่อฝึกระบบให้แม่นขึ้น หรือกด "ไม่ใช่" ถ้าผลลัพธ์ผิด เพื่อกันไม่ให้พาร์ทนั้นขึ้นมาสับสนซ้ำอีก (กดผิดใบ กด "เลิกทำ" ได้ทันที)</span>
                         </div>
                         <div className="flex flex-wrap gap-2 items-center">
                             <button onClick={()=>imgSearchRef.current && imgSearchRef.current.click()} disabled={visualBusy} className="bg-indigo-600 text-white px-5 py-3 rounded-xl font-bold flex items-center gap-2 disabled:opacity-50 hover:bg-indigo-700">
@@ -1757,11 +1802,43 @@
                             <button onClick={buildIndex} disabled={visualBusy} className="bg-white border px-4 py-3 rounded-xl font-bold text-slate-600 flex items-center gap-2 disabled:opacity-50 hover:bg-slate-50">
                                 <i className="fa-solid fa-database"></i> สร้าง/อัปเดตดัชนีรูป
                             </button>
+                            <button onClick={()=>setShowNegManager(true)} className="bg-white border px-4 py-3 rounded-xl font-bold text-slate-600 flex items-center gap-2 hover:bg-slate-50">
+                                <i className="fa-solid fa-ban"></i> จัดการตัวอย่างลบ
+                            </button>
                             <span className="text-xs text-slate-500">
                                 มีรูป {Object.values(partImages).reduce((s, arr) => s + (arr?.length || 0), 0)} ภาพ ({Object.keys(partImages).length} พาร์ท)
                                 {" "}· ทำดัชนีแล้ว {Object.values(embeddings).reduce((s, arr) => s + (arr?.length || 0), 0)} ภาพ ({Object.keys(embeddings).length} พาร์ท)
                             </span>
                         </div>
+
+                        {showNegManager && (
+                            <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 modal-overlay" onClick={() => setShowNegManager(false)}>
+                                <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-5 animate-fade-in max-h-[80vh] overflow-auto" onClick={e => e.stopPropagation()}>
+                                    <div className="flex justify-between items-center mb-3">
+                                        <h4 className="font-bold">ตัวอย่างลบ (Negative Examples)</h4>
+                                        <button onClick={() => setShowNegManager(false)} className="text-slate-400 hover:text-slate-600 text-xl"><Icons.X/></button>
+                                    </div>
+                                    <p className="text-[11px] text-slate-400 mb-3">รูปที่เคยกด "ไม่ใช่" ไว้ต่อพาร์ท — ถ้ากดพลาดไปตั้งแต่ก่อนมีปุ่ม "เลิกทำ" ลบล้างได้จากตรงนี้</p>
+                                    {Object.keys(negatives).length === 0 ? (
+                                        <div className="text-center text-xs text-slate-400 py-6">ยังไม่มีตัวอย่างลบ</div>
+                                    ) : (
+                                        <div className="divide-y">
+                                            {Object.keys(negatives).map(p => (
+                                                <div key={p} className="py-2 flex items-center justify-between gap-2">
+                                                    <div className="min-w-0">
+                                                        <div className="font-mono font-bold text-blue-600 text-sm truncate">{p}</div>
+                                                        <div className="text-[11px] text-slate-500 truncate">{partNameMap[p] || ""} · {negatives[p].length} รูป</div>
+                                                    </div>
+                                                    <button onClick={() => clearNegativeExamples(p)} className="text-red-500 text-xs font-bold hover:bg-red-50 px-2 py-1 rounded-lg whitespace-nowrap">
+                                                        ล้างทั้งหมด
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
                         {visualBusy && (
                             <div className="text-sm text-slate-600 flex items-center gap-2">
                                 <div className="loader" style={{width:16,height:16,borderWidth:2}}></div>
@@ -1790,10 +1867,17 @@
                                                     <div className="text-[11px] text-slate-500 truncate" title={r.name}>{r.name}</div>
                                                     <div className="mt-1 h-1.5 bg-slate-100 rounded overflow-hidden"><div className="h-full bg-indigo-500" style={{width: Math.max(2,Math.round(r.score*100))+'%'}}></div></div>
                                                     <div className="text-[10px] text-slate-400 text-right">{Math.round(r.score*100)}%</div>
-                                                    {feedbackFor[r.partNo] === 'yes' ? (
-                                                        <div className="mt-2 text-[10px] text-emerald-600 font-bold text-center"><i className="fa-solid fa-check mr-1"></i>บันทึกไว้ฝึกระบบแล้ว</div>
-                                                    ) : feedbackFor[r.partNo] === 'no' ? (
-                                                        <div className="mt-2 text-[10px] text-slate-400 font-bold text-center"><i className="fa-solid fa-xmark mr-1"></i>บันทึกว่าไม่ใช่แล้ว</div>
+                                                    {feedbackFor[r.partNo] ? (
+                                                        <div className="mt-2 flex items-center justify-between gap-1">
+                                                            <span className={`text-[10px] font-bold ${feedbackFor[r.partNo].type === 'yes' ? 'text-emerald-600' : 'text-slate-400'}`}>
+                                                                <i className={`fa-solid ${feedbackFor[r.partNo].type === 'yes' ? 'fa-check' : 'fa-xmark'} mr-1`}></i>
+                                                                {feedbackFor[r.partNo].type === 'yes' ? 'บันทึกไว้ฝึกระบบแล้ว' : 'บันทึกว่าไม่ใช่แล้ว'}
+                                                            </span>
+                                                            <button onClick={() => handleUndoFeedback(r.partNo)} disabled={submittingFeedback}
+                                                                className="text-[10px] text-blue-500 font-bold hover:underline disabled:opacity-50 whitespace-nowrap">
+                                                                เลิกทำ
+                                                            </button>
+                                                        </div>
                                                     ) : (
                                                         <div className="mt-2 grid grid-cols-2 gap-1">
                                                             <button onClick={() => handleConfirmMatch(r.partNo)} disabled={submittingFeedback}
