@@ -96,6 +96,21 @@ function doGet(e) {
       return ContentService.createTextOutput(JSON.stringify({ images: images })).setMimeType(ContentService.MimeType.JSON);
     }
 
+    // ดึงเวกเตอร์รูป (embedding) ของทุกพาร์ท สำหรับค้นหาด้วยรูป — โหลดเฉพาะตอนใช้งานโหมด Visual Search
+    if (action == "getEmbeddings") {
+      var embSheet = ss.getSheetByName("PartImages");
+      var embeddings = {};
+      if (embSheet && embSheet.getLastRow() > 1 && embSheet.getLastColumn() >= 6) {
+        var edata = embSheet.getDataRange().getValues();
+        for (var ei = 1; ei < edata.length; ei++) {
+          var epNo = String(edata[ei][0]).trim();
+          var evec = edata[ei][5]; // column F = Embedding
+          if (epNo && evec) embeddings[epNo] = String(evec);
+        }
+      }
+      return ContentService.createTextOutput(JSON.stringify({ embeddings: embeddings })).setMimeType(ContentService.MimeType.JSON);
+    }
+
     if (action == "getInventory") {
        var invSheet = ss.getSheetByName("Inventory");
        var transSheet = ss.getSheetByName("Transactions");
@@ -347,7 +362,7 @@ function doPost(e) {
       var imgSheet = ss.getSheetByName("PartImages");
       if (!imgSheet) {
         imgSheet = ss.insertSheet("PartImages");
-        imgSheet.appendRow(["PartNo", "FileId", "Url", "UpdatedAt", "User"]);
+        imgSheet.appendRow(["PartNo", "FileId", "Url", "UpdatedAt", "User", "Embedding"]);
       }
 
       var idata = imgSheet.getDataRange().getValues();
@@ -387,6 +402,37 @@ function doPost(e) {
           }
         }
       }
+    }
+
+    // 3.10 PROXY: อ่านไฟล์รูปจาก Drive เป็น base64 (ใช้ตอนสร้างดัชนีค้นหาด้วยรูป เพื่อเลี่ยง CORS)
+    else if (body.action === "get_image_b64") {
+      var gid = String(body.fileId || "").trim();
+      if (!gid) throw new Error("Missing fileId");
+      var gblob = DriveApp.getFileById(gid).getBlob();
+      return ContentService.createTextOutput(JSON.stringify({
+        status: "success",
+        base64: Utilities.base64Encode(gblob.getBytes()),
+        mimeType: gblob.getContentType()
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // 3.11 บันทึกเวกเตอร์รูป (embedding) ของหลายพาร์ทพร้อมกัน ลงคอลัมน์ F ของ PartImages
+    else if (body.action === "save_embeddings") {
+      var embItems = body.items || [];
+      var embSh = ss.getSheetByName("PartImages");
+      if (!embSh) {
+        embSh = ss.insertSheet("PartImages");
+        embSh.appendRow(["PartNo", "FileId", "Url", "UpdatedAt", "User", "Embedding"]);
+      }
+      var embAll = embSh.getDataRange().getValues();
+      var rowOf = {};
+      for (var ri = 1; ri < embAll.length; ri++) { rowOf[String(embAll[ri][0]).trim()] = ri + 1; }
+      var savedCount = 0;
+      embItems.forEach(function (it) {
+        var rr = rowOf[String(it.partNo || "").trim()];
+        if (rr) { embSh.getRange(rr, 6).setValue(String(it.embedding || "")); savedCount++; }
+      });
+      return ContentService.createTextOutput(JSON.stringify({ status: "success", count: savedCount })).setMimeType(ContentService.MimeType.JSON);
     }
 
     // 4. DELETE ITEM
