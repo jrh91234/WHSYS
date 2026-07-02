@@ -258,10 +258,7 @@
         //   (2) ขอบมีทั้งแนวนอนและแนวตั้งปนกัน (ตัวอักษรมีเส้นทุกทิศ — ขอบพาร์ท/เงาเป็นเส้นตรงทิศเดียว)
         //   (3) เจอ cell แบบนี้หลาย cell (ข้อความจริงกินพื้นที่กว้างกว่า 16px เสมอ)
         // เกณฑ์ยังเอียงข้าง "เผื่อไว้": ผิวลายถี่ ๆ (knurling/ตะแกรง) อาจหลอกให้ตอบ "มี" ได้ = แค่เสีย OCR หนึ่งรอบเท่าพฤติกรรมเดิม
-        const TEXT_EDGE_MIN_CONTRAST = 48;  // ความต่างความสว่างระหว่างพิกเซลติดกันขั้นต่ำที่นับเป็น "ขอบคม"
-        const TEXT_CELL_MIN_DENSITY = 0.14; // สัดส่วนพิกเซลขอบคมใน cell ที่ถือว่าหนาแน่นระดับตัวหนังสือ (ขอบวัตถุเส้นเดียวพาดผ่านได้แค่ ~0.06-0.09)
-        const TEXT_DIRECTION_BALANCE = 0.25; // ทิศที่น้อยกว่า (นอน/ตั้ง) ต้องมีอย่างน้อยสัดส่วนนี้ของขอบทั้งหมดใน cell
-        const TEXT_MIN_BUSY_CELLS = 2;      // ต้องเจอ cell เข้าเกณฑ์อย่างน้อยกี่ cell ถึงถือว่ามีตัวหนังสือ
+        // เกณฑ์ทั้งหมดปรับได้จากหน้า "ตั้งค่าค้นหาด้วยรูป" (admin) — ค่าอยู่ใน VS_TUNE (textContrast/textDensity/textBalance/textCells)
         const mightContainText = (imgEl) => {
             try {
                 const W = 256;
@@ -282,17 +279,17 @@
                         for (let y = cy * cell; y < (cy + 1) * cell - 1; y++) {
                             for (let x = cx * cell; x < (cx + 1) * cell - 1; x++) {
                                 const i = y * W + x;
-                                const h = Math.abs(g[i] - g[i + 1]) > TEXT_EDGE_MIN_CONTRAST;
-                                const v = Math.abs(g[i] - g[i + W]) > TEXT_EDGE_MIN_CONTRAST;
+                                const h = Math.abs(g[i] - g[i + 1]) > VS_TUNE.textContrast;
+                                const v = Math.abs(g[i] - g[i + W]) > VS_TUNE.textContrast;
                                 if (h) hEdges++;
                                 if (v) vEdges++;
                                 if (h || v) edges++;
                             }
                         }
-                        if (edges / (cell * cell) >= TEXT_CELL_MIN_DENSITY &&
-                            Math.min(hEdges, vEdges) >= TEXT_DIRECTION_BALANCE * (hEdges + vEdges)) {
+                        if (edges / (cell * cell) >= VS_TUNE.textDensity &&
+                            Math.min(hEdges, vEdges) >= VS_TUNE.textBalance * (hEdges + vEdges)) {
                             busyCells++;
-                            if (busyCells >= TEXT_MIN_BUSY_CELLS) return true;
+                            if (busyCells >= VS_TUNE.textCells) return true;
                         }
                     }
                 }
@@ -789,17 +786,27 @@
 
         // ===== ค้นหาด้วยรูป (Visual Search) — แยกออกมาเป็นฟังก์ชันเดี่ยว ไม่ฝังลึกอยู่ใน AdvancedMRPView =====
         // embeddings: partNo -> [{ fileId, vector }] — พาร์ทเดียวกันมีได้หลายรูป/หลายมุม คะแนนของพาร์ทคือค่าที่ดีที่สุดในบรรดารูปทั้งหมด
-        const NEG_EXAMPLE_PENALTY_WEIGHT = 0.4; // ทุก ๆ 1 หน่วยความคล้ายกับ "ตัวอย่างลบ" จะหักคะแนนพาร์ทนั้น 0.4 หน่วย
-        const NEG_EXAMPLE_MAX_PENALTY = 0.25;   // เพดานหักคะแนนสูงสุด — กันไม่ให้ตัวอย่างลบตัวเดียว (เช่นกดพลาด) ลบคะแนนบวกที่สูงจริง ๆ จนหลุดผลค้นหาไปเลย
-        const REJECT_DISABLED_ABOVE_SCORE = 0.6; // ความเหมือนสูงกว่านี้ถือว่าน่าจะถูกจริง ๆ ปิดปุ่ม "ไม่ใช่" กันกดพลาดไปสร้างตัวอย่างลบผิด ๆ
-        const OCR_TEXT_MATCH_WEIGHT = 0.3;       // โบนัสคะแนนสูงสุดจากตัวหนังสือ/label ที่ตรงกัน (ตัวหนังสือตรงเป๊ะ = +0.3)
-        const MIN_RESULT_SCORE = 0.5;            // ตัดผลที่ความเหมือนต่ำกว่านี้ทิ้ง (หลังหักคะแนนตัวอย่างลบแล้ว)
-        const DETAIL_RERANK_MARGIN = 0.06;       // อันดับต้น ๆ คะแนนห่างกันน้อยกว่านี้ = สูสีจนไว้ใจไม่ได้ ต้องตรวจรายละเอียดเชิงลึกเพิ่ม
-        const DETAIL_RERANK_MAX = 4;             // ตรวจเชิงลึกอย่างมากกี่พาร์ท (แต่ละพาร์ทต้องดึงรูป + embed 5 patch — จำกัดไว้ไม่ให้ช้า)
-        const DETAIL_SCORE_WEIGHT = 0.45;        // น้ำหนักคะแนนรายละเอียดตอนผสมกับคะแนนภาพรวม (0 = ไม่สน, 1 = ใช้รายละเอียดล้วน)
-        const COLOR_SCORE_SPAN = 0.2;            // ช่วงผลของสีต่อคะแนน: สีตรงเป๊ะ +0.1 / สีคนละเรื่อง -0.1 (คูณจาก colorSim-0.5)
-        const COLOR_MISMATCH_BADGE = 0.35;       // colorSim ต่ำกว่านี้ขึ้นป้าย "สีต่าง" เตือนบนการ์ดผลลัพธ์
-        const HIGH_CONFIDENCE_CUTOFF = 0.9;      // ตัวท็อปมั่นใจถึงเกณฑ์นี้ = ตัดตัวเลือกที่คะแนนต่ำกว่าเกณฑ์ทิ้ง ไม่ให้กวนสายตาจนหยิบผิด
+        // ===== ค่าปรับจูนของค้นหาด้วยรูป — admin แก้ได้จากหน้าจอ (ปุ่ม "ตั้งค่า" ในหน้าค้นหาด้วยรูป) =====
+        // เก็บใน localStorage ต่อเครื่อง: เครื่องไหนปรับ เครื่องนั้นได้ผล — ค่าที่ไม่เคยปรับใช้ค่าเริ่มต้นเสมอ
+        const VS_TUNE_DEFAULTS = {
+            negPenaltyWeight: 0.4, // ทุก ๆ 1 หน่วยความคล้ายกับ "ตัวอย่างลบ" หักคะแนนเท่านี้
+            negMaxPenalty: 0.25,   // เพดานหักคะแนนจากตัวอย่างลบ — กันกดพลาดตัวเดียวลบคะแนนจริงทิ้งหมด
+            rejectAbove: 0.6,      // คะแนนสูงกว่านี้ปิดปุ่ม "ไม่ใช่" กันกดพลาด
+            ocrWeight: 0.3,        // โบนัสสูงสุดเมื่อตัวหนังสือ/label ตรงกันเป๊ะ
+            minScore: 0.5,         // ตัดผลที่คะแนนต่ำกว่านี้ทิ้ง
+            rerankMargin: 0.06,    // อันดับต้นห่างกันน้อยกว่านี้ = สูสี ต้องตรวจรายละเอียดเชิงลึก
+            rerankMax: 4,          // ตรวจเชิงลึกสูงสุดกี่พาร์ท (แต่ละพาร์ทต้องดึงรูป + embed 5 patch)
+            detailWeight: 0.45,    // น้ำหนักคะแนนรายละเอียดตอนผสมกับคะแนนภาพรวม
+            colorSpan: 0.2,        // ช่วงผลของสี: สีตรงเป๊ะ +ครึ่งหนึ่งของค่านี้ / สีคนละเรื่อง -ครึ่งหนึ่ง
+            colorBadge: 0.35,      // ความคล้ายสีต่ำกว่านี้ขึ้นป้าย "สีต่าง"
+            highCut: 0.9,          // ตัวท็อปถึงเกณฑ์นี้ = ตัดตัวเลือกที่ต่ำกว่าเกณฑ์ทิ้ง
+            textContrast: 48,      // ความต่างความสว่างขั้นต่ำที่นับเป็น "ขอบคม" (ใช้เช็คว่ารูปมีตัวหนังสือไหมก่อนยิง OCR)
+            textDensity: 0.14,     // สัดส่วนพิกเซลขอบคมใน cell ที่ถือว่าหนาแน่นระดับตัวหนังสือ
+            textBalance: 0.25,     // ทิศขอบที่น้อยกว่า (นอน/ตั้ง) ต้องมีอย่างน้อยสัดส่วนนี้
+            textCells: 2           // ต้องเจอ cell เข้าเกณฑ์อย่างน้อยกี่ cell ถึงถือว่ามีตัวหนังสือ
+        };
+        const VS_TUNE = { ...VS_TUNE_DEFAULTS, ...getStorage('vs_tune', {}) };
+        const saveVsTune = (vals) => { Object.assign(VS_TUNE, vals); setStorage('vs_tune', vals); };
 
         const useVisualSearch = (apiUrl, partImages = {}, partNameMap = {}) => {
             const [embeddings, setEmbeddings] = useState({});
@@ -982,16 +989,16 @@
                         });
                         const negSim = negatives[p] ? Math.max(0, ...negatives[p].map(v => cosineSim(q, v))) : 0;
                         // จำกัดเพดานการหักคะแนน กันไม่ให้ตัวอย่างลบเพียงอันเดียว (เช่นกดพลาด) ลบล้างคะแนนบวกที่สูงจริง ๆ ทิ้งไปทั้งหมด
-                        const penalty = Math.min(negSim * NEG_EXAMPLE_PENALTY_WEIGHT, NEG_EXAMPLE_MAX_PENALTY);
-                        // ปรับตามสี: สีตรงได้บวก สีคนละเรื่องโดนหัก (สูงสุด ±COLOR_SCORE_SPAN/2) — รูปดัชนีรุ่นเก่าที่ยังไม่มีลายเซ็นสีไม่ถูกปรับ
-                        const colorAdj = colorSim == null ? 0 : (colorSim - 0.5) * COLOR_SCORE_SPAN;
+                        const penalty = Math.min(negSim * VS_TUNE.negPenaltyWeight, VS_TUNE.negMaxPenalty);
+                        // ปรับตามสี: สีตรงได้บวก สีคนละเรื่องโดนหัก (สูงสุด ±VS_TUNE.colorSpan/2) — รูปดัชนีรุ่นเก่าที่ยังไม่มีลายเซ็นสีไม่ถูกปรับ
+                        const colorAdj = colorSim == null ? 0 : (colorSim - 0.5) * VS_TUNE.colorSpan;
                         const base = posScore - penalty + colorAdj;
                         return { partNo: p, name: partNameMap[p] || "", base, bestFileId, colorSim, score: Math.min(1, base), textSim: 0 };
                     });
                     // ขั้นที่ 2: OCR เฉพาะเมื่อคุ้มจริง ๆ — (ก) มีตัวเต็งที่โบนัสตัวหนังสือ (+0.3 สูงสุด) ยังดันขึ้นถึงเกณฑ์แสดงผลได้
                     // และพาร์ทนั้นมีตัวหนังสือในดัชนีให้เทียบ (ข) รูปที่ถ่ายดูมีตัวหนังสือจริง (เช็คในเครื่อง ~10ms) — ไม่เข้าเงื่อนไขก็ข้าม ไม่เสียเวลารอ backend
                     const ocrWorthIt = scored.some(r =>
-                        r.base >= MIN_RESULT_SCORE - OCR_TEXT_MATCH_WEIGHT &&
+                        r.base >= VS_TUNE.minScore - VS_TUNE.ocrWeight &&
                         embeddings[r.partNo].some(it => it.tokens && it.tokens.size > 0));
                     if (ocrWorthIt && mightContainText(img)) {
                         setVisualMsg("กำลังอ่านตัวหนังสือในรูป...");
@@ -999,15 +1006,15 @@
                         if (queryTokens.size > 0) scored.forEach(r => {
                             // โบนัสจากตัวหนังสือ/label ตรงกัน — ช่วยแยกพาร์ทที่หน้าตาเหมือนกันแต่พิมพ์เบอร์/ยี่ห้อต่างกัน
                             r.textSim = Math.max(0, ...embeddings[r.partNo].map(it => ocrTextSim(queryTokens, it.tokens || new Set())));
-                            r.score = Math.min(1, r.base + r.textSim * OCR_TEXT_MATCH_WEIGHT);
+                            r.score = Math.min(1, r.base + r.textSim * VS_TUNE.ocrWeight);
                         });
                     }
                     scored.sort((a, b) => b.score - a.score);
-                    const filtered = scored.filter(r => r.score >= MIN_RESULT_SCORE);
+                    const filtered = scored.filter(r => r.score >= VS_TUNE.minScore);
                     // ขั้นที่ 3: อันดับต้น ๆ คะแนนสูสีกันมาก = ภาพรวมแยกไม่ออก (เช่น พาร์ทต่างกันแค่จำนวนรู) —
                     // ตรวจรายละเอียดเชิงลึกเฉพาะกลุ่มตัวเต็ง: หั่นรูปเป็นส่วน ๆ เทียบทีละส่วน จุดต่างเล็ก ๆ จะไม่ถูกเฉลี่ยกลืนหาย
-                    if (filtered.length >= 2 && filtered[0].score - filtered[1].score < DETAIL_RERANK_MARGIN) {
-                        const group = filtered.filter(r => filtered[0].score - r.score < DETAIL_RERANK_MARGIN).slice(0, DETAIL_RERANK_MAX);
+                    if (filtered.length >= 2 && filtered[0].score - filtered[1].score < VS_TUNE.rerankMargin) {
+                        const group = filtered.filter(r => filtered[0].score - r.score < VS_TUNE.rerankMargin).slice(0, VS_TUNE.rerankMax);
                         if (group.length >= 2) {
                             setVisualMsg("คะแนนสูสี — กำลังตรวจรายละเอียดเชิงลึก (รู/ร่อง/จุดต่างเล็ก ๆ)...");
                             try {
@@ -1027,7 +1034,7 @@
                                         patchCacheRef.current[r.bestFileId] = cPatches;
                                     }
                                     const detail = patchSetSim(qPatches, cPatches);
-                                    reranked.push({ r, detail, score: Math.min(1, r.score * (1 - DETAIL_SCORE_WEIGHT) + detail * DETAIL_SCORE_WEIGHT) });
+                                    reranked.push({ r, detail, score: Math.min(1, r.score * (1 - VS_TUNE.detailWeight) + detail * VS_TUNE.detailWeight) });
                                 }
                                 reranked.forEach(({ r, detail, score }) => { r.detail = detail; r.score = score; });
                                 filtered.sort((a, b) => b.score - a.score);
@@ -1042,8 +1049,8 @@
                     // มั่นใจสูง: ตัวท็อปถึงเกณฑ์ (หลังผ่านทุกขั้นรวมถึงตรวจเชิงลึกแล้ว) — ตัดตัวเลือกที่คะแนนไม่ถึงเกณฑ์ทิ้ง
                     // เหลือเฉพาะตัวที่มั่นใจจริง คนหน้างานจะได้ไม่เผลอหยิบตัวคะแนนต่ำที่แค่บังเอิญโผล่มาด้วย
                     let finalResults = filtered;
-                    if (filtered.length > 1 && filtered[0].score >= HIGH_CONFIDENCE_CUTOFF) {
-                        finalResults = filtered.filter(r => r.score >= HIGH_CONFIDENCE_CUTOFF);
+                    if (filtered.length > 1 && filtered[0].score >= VS_TUNE.highCut) {
+                        finalResults = filtered.filter(r => r.score >= VS_TUNE.highCut);
                         // เหลือตัวเดียว = ชัดเจนแล้ว ไม่ต้องโชว์ป้ายเตือน "คะแนนสูสี" ให้สับสน
                         if (finalResults.length === 1) setVisualNotice("");
                     }
@@ -2047,6 +2054,80 @@
             );
         };
 
+        // ===== หน้าตั้งค่าค้นหาด้วยรูป (admin เท่านั้น) — ปรับเกณฑ์ทุกตัวของ VS_TUNE ได้จากหน้าจอ เก็บใน localStorage ต่อเครื่อง =====
+        const VS_TUNE_GROUPS = [
+            { title: "การอ่านตัวหนังสือ (OCR)", icon: "fa-font", fields: [
+                { key: 'textDensity', label: "ความหนาแน่นขอบขั้นต่ำ", hint: "เพิ่มถ้ายังยิง OCR ทั้งที่พาร์ทไม่มีตัวหนังสือ / ลดถ้ามี label แต่ระบบไม่ยอมอ่าน", step: 0.01 },
+                { key: 'textCells', label: "จำนวนจุดขั้นต่ำ", hint: "ต้องเจอบริเวณหน้าตาแบบตัวหนังสือกี่จุดถึงยอมยิง OCR — เพิ่มเพื่อลดการยิงมั่ว", step: 1 },
+                { key: 'textContrast', label: "ความคมของขอบขั้นต่ำ (0-255)", hint: "เพิ่มถ้าเงา/ลายพื้นผิวหลอกว่าเป็นตัวหนังสือบ่อย", step: 4 },
+                { key: 'textBalance', label: "สมดุลทิศของขอบ (0-0.5)", hint: "เพิ่มเพื่อกรองขอบวัตถุที่เป็นเส้นตรงทิศเดียวออก", step: 0.05 },
+                { key: 'ocrWeight', label: "โบนัสตัวหนังสือตรง", hint: "คะแนนบวกสูงสุดเมื่อตัวหนังสือ/label ตรงกันเป๊ะ", step: 0.05 },
+            ]},
+            { title: "คะแนนและการแสดงผล", icon: "fa-ranking-star", fields: [
+                { key: 'minScore', label: "คะแนนขั้นต่ำที่แสดงผล", hint: "ผลที่คะแนนต่ำกว่านี้ไม่ขึ้นในผลค้นหา", step: 0.05 },
+                { key: 'highCut', label: "เกณฑ์มั่นใจสูง", hint: "ตัวท็อปถึงเกณฑ์นี้จะซ่อนตัวเลือกที่คะแนนต่ำกว่าเกณฑ์ทั้งหมด", step: 0.05 },
+                { key: 'rejectAbove', label: "ปิดปุ่ม \"ไม่ใช่\" เมื่อคะแนนเกิน", hint: "กันกดพลาดไปสร้างตัวอย่างลบผิด ๆ กับผลที่น่าจะถูกอยู่แล้ว", step: 0.05 },
+                { key: 'colorSpan', label: "ผลของสีต่อคะแนน", hint: "สีตรงเป๊ะ +ครึ่งหนึ่งของค่านี้ / สีคนละเรื่อง -ครึ่งหนึ่ง — เพิ่มถ้าพาร์ทคนละสียังติดมา", step: 0.05 },
+                { key: 'colorBadge', label: "เกณฑ์ป้าย \"สีต่าง\"", hint: "ความคล้ายสีต่ำกว่านี้ขึ้นป้ายเตือนบนการ์ดผลลัพธ์", step: 0.05 },
+            ]},
+            { title: "ตรวจรายละเอียดเชิงลึก (รู/ร่อง)", icon: "fa-magnifying-glass-plus", fields: [
+                { key: 'rerankMargin', label: "ช่วงคะแนนที่ถือว่าสูสี", hint: "อันดับต้นห่างกันน้อยกว่านี้จะตรวจรายละเอียดเชิงลึกเพิ่ม", step: 0.01 },
+                { key: 'rerankMax', label: "จำนวนพาร์ทที่ตรวจเชิงลึก", hint: "มากขึ้น = ครอบคลุมขึ้นแต่ช้าลง (ต้องดึงรูป + ประมวลผลต่อพาร์ท)", step: 1 },
+                { key: 'detailWeight', label: "น้ำหนักคะแนนรายละเอียด", hint: "0 = ไม่สนรายละเอียด / 1 = ใช้รายละเอียดล้วน", step: 0.05 },
+            ]},
+            { title: "ตัวอย่างลบ", icon: "fa-ban", fields: [
+                { key: 'negPenaltyWeight', label: "น้ำหนักหักคะแนน", hint: "หักคะแนนตามความคล้ายกับรูปที่เคยกด \"ไม่ใช่\"", step: 0.05 },
+                { key: 'negMaxPenalty', label: "เพดานหักคะแนน", hint: "กันตัวอย่างลบตัวเดียว (กดพลาด) ลบคะแนนจริงทิ้งหมด", step: 0.05 },
+            ]},
+        ];
+        const VsTunePanel = ({ onClose }) => {
+            const [vals, setVals] = useState(() => ({ ...VS_TUNE }));
+            const setVal = (k, v) => setVals(prev => ({ ...prev, [k]: v }));
+            const save = () => {
+                // แปลงเป็นตัวเลขก่อนเก็บ — ช่องที่พิมพ์เพี้ยน (ว่าง/ไม่ใช่ตัวเลข) ถอยกลับไปใช้ค่าเริ่มต้นของช่องนั้น
+                const clean = {};
+                Object.keys(VS_TUNE_DEFAULTS).forEach(k => {
+                    const n = parseFloat(vals[k]);
+                    clean[k] = isNaN(n) ? VS_TUNE_DEFAULTS[k] : n;
+                });
+                saveVsTune(clean);
+                onClose();
+            };
+            return (
+                <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 modal-overlay" onClick={onClose}>
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-5 animate-fade-in max-h-[85vh] overflow-auto" onClick={e => e.stopPropagation()}>
+                        <div className="flex justify-between items-center mb-1">
+                            <h4 className="font-bold flex items-center gap-2"><i className="fa-solid fa-sliders text-indigo-500"></i> ตั้งค่าค้นหาด้วยรูป</h4>
+                            <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl"><Icons.X/></button>
+                        </div>
+                        <p className="text-[11px] text-slate-400 mb-3">ค่าเก็บไว้ในเครื่องนี้เท่านั้น (localStorage) — มีผลทันทีกับการค้นหา/ทำดัชนีครั้งถัดไป ไม่ต้องรีเฟรช · ช่องที่เว้นว่างจะกลับไปใช้ค่าเริ่มต้น</p>
+                        {VS_TUNE_GROUPS.map(g => (
+                            <div key={g.title} className="mb-4">
+                                <div className="font-bold text-xs text-slate-600 mb-2 flex items-center gap-1.5"><i className={`fa-solid ${g.icon} text-indigo-400`}></i>{g.title}</div>
+                                <div className="space-y-2">
+                                    {g.fields.map(f => (
+                                        <div key={f.key} className="flex items-start justify-between gap-3 bg-slate-50 rounded-lg px-3 py-2">
+                                            <div className="min-w-0">
+                                                <div className="text-xs font-bold text-slate-700">{f.label}</div>
+                                                <div className="text-[10px] text-slate-400">{f.hint} · ค่าเริ่มต้น {VS_TUNE_DEFAULTS[f.key]}</div>
+                                            </div>
+                                            <input type="number" step={f.step} value={vals[f.key]}
+                                                onChange={e => setVal(f.key, e.target.value)}
+                                                className="w-24 shrink-0 border rounded-lg px-2 py-1.5 text-sm text-right font-mono" />
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        ))}
+                        <div className="flex gap-2 pt-1">
+                            <button onClick={() => setVals({ ...VS_TUNE_DEFAULTS })} className="px-4 py-2.5 rounded-xl border font-bold text-slate-500 text-sm hover:bg-slate-50">คืนค่าเริ่มต้นทั้งหมด</button>
+                            <button onClick={save} className="flex-1 px-4 py-2.5 rounded-xl bg-indigo-600 text-white font-bold text-sm hover:bg-indigo-700">บันทึก</button>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
         const VisualSearchView = ({ inventory, bomData, apiUrl, partImages = {}, setPartImages, currentUser }) => {
             // แผนที่ Part No -> ชื่อ (จาก inventory + ทุกชีต BOM) สำหรับแสดงผลค้นหาด้วยรูป
             const partNameMap = useMemo(() => {
@@ -2077,6 +2158,7 @@
             const [submittingFeedback, setSubmittingFeedback] = useState(false);
             const [feedbackFor, setFeedbackFor] = useState({}); // partNo -> { type: 'yes'|'no', fileId?, embedding? }
             const [showNegManager, setShowNegManager] = useState(false);
+            const [showTunePanel, setShowTunePanel] = useState(false); // หน้าตั้งค่าเกณฑ์ค้นหาด้วยรูป — admin เท่านั้น
 
             // ยืนยันว่ารูปที่ค้นหาคือพาร์ทนี้จริง -> บันทึกรูปนั้นเป็นรูปของพาร์ทเพิ่มอีก 1 รูป
             // แล้วสร้างดัชนีให้อัตโนมัติ (เหมือนอัปโหลดรูปปกติ) เพื่อให้ค้นหาครั้งถัดไปแม่นขึ้น
@@ -2135,7 +2217,7 @@
                         <input type="file" ref={imgSearchRef} onChange={(e) => { setFeedbackFor({}); handleQueryImage(e); }} className="hidden" accept="image/*" capture="environment" />
                         <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4 text-xs text-indigo-800 flex items-start gap-2">
                             <i className="fa-solid fa-circle-info mt-0.5"></i>
-                            <span>ถ่ายรูปพาร์ทเพื่อค้นหาจากทั้งความเหมือนของรูปและตัวหนังสือ/label บนพาร์ท (OCR) — รูปที่อัปใหม่จะถูกสร้างดัชนีให้อัตโนมัติ ส่วนรูปเก่าที่ยังไม่มีดัชนีหรือยังไม่เคยอ่านตัวหนังสือ กดปุ่ม "สร้าง/อัปเดตดัชนีรูป" เพื่อประมวลผลย้อนหลัง — เจอผลลัพธ์ที่ใช่แล้วกด "ใช่" เพื่อฝึกระบบให้แม่นขึ้น หรือกด "ไม่ใช่" ถ้าผลลัพธ์ผิด เพื่อกันไม่ให้พาร์ทนั้นขึ้นมาสับสนซ้ำอีก (กดผิดใบ กด "เลิกทำ" ได้ทันที) — ผลลัพธ์ที่ความเหมือนเกิน {Math.round(REJECT_DISABLED_ABOVE_SCORE * 100)}% จะกด "ไม่ใช่" ไม่ได้ เพราะน่าจะถูกจริง ๆ อยู่แล้ว กันกดพลาด</span>
+                            <span>ถ่ายรูปพาร์ทเพื่อค้นหาจากทั้งความเหมือนของรูปและตัวหนังสือ/label บนพาร์ท (OCR) — รูปที่อัปใหม่จะถูกสร้างดัชนีให้อัตโนมัติ ส่วนรูปเก่าที่ยังไม่มีดัชนีหรือยังไม่เคยอ่านตัวหนังสือ กดปุ่ม "สร้าง/อัปเดตดัชนีรูป" เพื่อประมวลผลย้อนหลัง — เจอผลลัพธ์ที่ใช่แล้วกด "ใช่" เพื่อฝึกระบบให้แม่นขึ้น หรือกด "ไม่ใช่" ถ้าผลลัพธ์ผิด เพื่อกันไม่ให้พาร์ทนั้นขึ้นมาสับสนซ้ำอีก (กดผิดใบ กด "เลิกทำ" ได้ทันที) — ผลลัพธ์ที่ความเหมือนเกิน {Math.round(VS_TUNE.rejectAbove * 100)}% จะกด "ไม่ใช่" ไม่ได้ เพราะน่าจะถูกจริง ๆ อยู่แล้ว กันกดพลาด</span>
                         </div>
                         <div className="flex flex-wrap gap-2 items-center">
                             <button onClick={()=>imgSearchRef.current && imgSearchRef.current.click()} disabled={visualBusy} className="bg-indigo-600 text-white px-5 py-3 rounded-xl font-bold flex items-center gap-2 disabled:opacity-50 hover:bg-indigo-700">
@@ -2147,12 +2229,18 @@
                             <button onClick={()=>setShowNegManager(true)} className="bg-white border px-4 py-3 rounded-xl font-bold text-slate-600 flex items-center gap-2 hover:bg-slate-50">
                                 <i className="fa-solid fa-ban"></i> จัดการตัวอย่างลบ
                             </button>
+                            {currentUser?.role === 'ADMIN' && (
+                                <button onClick={()=>setShowTunePanel(true)} title="ปรับเกณฑ์การค้นหาด้วยรูป (เฉพาะ admin)" className="bg-white border px-4 py-3 rounded-xl font-bold text-slate-600 flex items-center gap-2 hover:bg-slate-50">
+                                    <i className="fa-solid fa-sliders"></i> ตั้งค่า
+                                </button>
+                            )}
                             <span className="text-xs text-slate-500">
                                 มีรูป {Object.values(partImages).reduce((s, arr) => s + (arr?.length || 0), 0)} ภาพ ({Object.keys(partImages).length} พาร์ท)
                                 {" "}· ทำดัชนีแล้ว {Object.values(embeddings).reduce((s, arr) => s + (arr?.length || 0), 0)} ภาพ ({Object.keys(embeddings).length} พาร์ท)
                             </span>
                         </div>
 
+                        {showTunePanel && <VsTunePanel onClose={() => setShowTunePanel(false)} />}
                         {showNegManager && (
                             <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 modal-overlay" onClick={() => setShowNegManager(false)}>
                                 <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-5 animate-fade-in max-h-[80vh] overflow-auto" onClick={e => e.stopPropagation()}>
@@ -2224,7 +2312,7 @@
                                                         <span>
                                                             {r.textSim > 0.2 ? <span className="text-amber-600 font-bold"><i className="fa-solid fa-tag mr-0.5"></i>ตัวหนังสือตรง</span> : null}
                                                             {r.detail != null ? <span className="text-purple-600 font-bold ml-1" title="เทียบรายละเอียดทีละส่วนของภาพ (แยกจุดต่างเล็ก ๆ เช่น จำนวนรู)"><i className="fa-solid fa-magnifying-glass-plus mr-0.5"></i>ละเอียด {Math.round(r.detail*100)}%</span> : null}
-                                                            {r.colorSim != null && r.colorSim < COLOR_MISMATCH_BADGE ? <span className="text-rose-500 font-bold ml-1" title="โทนสีของรูปที่ถ่ายกับรูปพาร์ทนี้ต่างกันมาก — อาจเป็นพาร์ททรงเดียวกันคนละสี"><i className="fa-solid fa-palette mr-0.5"></i>สีต่าง</span> : null}
+                                                            {r.colorSim != null && r.colorSim < VS_TUNE.colorBadge ? <span className="text-rose-500 font-bold ml-1" title="โทนสีของรูปที่ถ่ายกับรูปพาร์ทนี้ต่างกันมาก — อาจเป็นพาร์ททรงเดียวกันคนละสี"><i className="fa-solid fa-palette mr-0.5"></i>สีต่าง</span> : null}
                                                         </span>
                                                         <span>{Math.round(r.score*100)}%</span>
                                                     </div>
@@ -2239,7 +2327,7 @@
                                                                 เลิกทำ
                                                             </button>
                                                         </div>
-                                                    ) : r.score >= REJECT_DISABLED_ABOVE_SCORE ? (
+                                                    ) : r.score >= VS_TUNE.rejectAbove ? (
                                                         <button onClick={() => handleConfirmMatch(r.partNo)} disabled={submittingFeedback}
                                                             title="ยืนยันว่ารูปที่ค้นหาคือพาร์ทนี้ เพื่อนำไปฝึกระบบให้แม่นขึ้น"
                                                             className="mt-2 w-full bg-emerald-600 text-white text-[10px] font-bold py-1.5 rounded-lg hover:bg-emerald-700 disabled:opacity-50">
