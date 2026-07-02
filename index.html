@@ -63,6 +63,18 @@
         };
         const partFileId = (partImages, partNo) => (partImages[String(partNo || "").trim()] || [])[0]?.fileId || "";
 
+        // แปลงข้อมูลรูปพาร์ทให้เป็นรูปแบบใหม่ (partNo -> [รูป, ...]) เสมอ
+        // กันแอปพังจากข้อมูลรุ่นเก่า (partNo -> รูปเดียว) ที่ค้างใน localStorage หรือมาจาก backend ที่ยังไม่ได้ deploy ใหม่
+        const normalizePartImages = (raw) => {
+            const out = {};
+            Object.keys(raw || {}).forEach(p => {
+                const v = raw[p];
+                if (Array.isArray(v)) { if (v.length) out[p] = v.filter(img => img && img.fileId); }
+                else if (v && v.fileId) out[p] = [v]; // รูปแบบเก่า: object รูปเดียว -> ห่อเป็น array
+            });
+            return out;
+        };
+
         // <img> สำหรับรูป Drive ที่ทนต่อการโหลดพร้อมกันหลายรูป (rate-limit):
         // ใช้ lh3.googleusercontent.com เป็นหลัก (เร็ว/โดน throttle น้อย) → ถ้าพลาด fallback ไป
         // drive.google.com/thumbnail → ถ้ายังพลาดอีกให้ลองซ้ำแบบหน่วงเวลา (สูงสุด 3 ครั้ง)
@@ -320,7 +332,7 @@
             const [users, setUsers] = useState(() => getStorage(STORAGE_KEY_USERS, INITIAL_USERS));
             const [bomData, setBomData] = useState(() => getStorage(STORAGE_KEY_BOM_DATA, {}));
             const [bomVersion, setBomVersion] = useState(() => getStorage(STORAGE_KEY_BOM_VERSION, 0));
-            const [partImages, setPartImages] = useState(() => getStorage(STORAGE_KEY_PART_IMAGES, {}));
+            const [partImages, setPartImages] = useState(() => normalizePartImages(getStorage(STORAGE_KEY_PART_IMAGES, {})));
             const [apiUrl, setApiUrl] = useState(() => localStorage.getItem(STORAGE_KEY_API_URL) || DEFAULT_API_URL);
             
             const [isLoading, setIsLoading] = useState(false);
@@ -393,7 +405,7 @@
                     try {
                         const resImg = await fetch(apiUrl + "?action=getImages&t=" + Date.now());
                         const jsonImg = await resImg.json();
-                        if (jsonImg.images) setPartImages(jsonImg.images);
+                        if (jsonImg.images) setPartImages(normalizePartImages(jsonImg.images));
                     } catch (imgErr) { console.log("Image sync skipped", imgErr); }
 
                 } catch (e) {
@@ -677,29 +689,40 @@
             }, [apiUrl]);
             useEffect(() => { if (!embLoaded) loadEmbeddings(); }, [embLoaded, loadEmbeddings]);
 
-            // สร้าง/อัปเดตดัชนี: ดึงรูปที่ยังไม่มี embedding จาก Drive (ผ่าน proxy) มาแปลงเป็นเวกเตอร์แล้วบันทึก — ทำทีละรูป ไม่ใช่ทีละพาร์ท
-            // รวมถึงรูปที่ทำดัชนีไว้ตั้งแต่ก่อนมีระบบอ่านตัวหนังสือ (มี embedding แต่ยังไม่มี OCR text) ให้ประมวลผลใหม่ด้วย
-            const buildIndex = async () => {
-                if (!apiUrl) return alert("ยังไม่ได้ตั้งค่า API URL");
+            // หารูปที่ยังไม่มีดัชนี (หรือทำดัชนีไว้ก่อนมีระบบอ่านตัวหนังสือ) — skipRecentMs ไว้ข้ามรูปที่เพิ่งอัป
+            // ซึ่งงาน auto-index เบื้องหลังของมันอาจกำลังวิ่งอยู่ กันประมวลผลซ้ำซ้อนกันเอง
+            const findUnindexed = (skipRecentMs = 0) => {
                 const targets = [];
+                const now = Date.now();
                 Object.keys(partImages).forEach(p => {
                     const indexed = {};
                     (embeddings[p] || []).forEach(it => { indexed[it.fileId] = it; });
                     (partImages[p] || []).forEach(img => {
                         if (!img.fileId) return;
+                        if (skipRecentMs && img.updatedAt && (now - new Date(img.updatedAt).getTime()) < skipRecentMs) return;
                         const existing = indexed[img.fileId];
                         if (!existing || !existing.hasOcr) targets.push({ partNo: p, fileId: img.fileId });
                     });
                 });
-                if (targets.length === 0) return alert("ดัชนีรูปครบแล้ว — ไม่มีรูปใหม่ให้ประมวลผล");
-                setVisualBusy(true); setVisualMsg("กำลังโหลดโมเดล AI (ครั้งแรกอาจนานหน่อย)..."); setIndexProg({ done: 0, total: targets.length });
+                return targets;
+            };
+
+            // ประมวลผลดัชนีตามรายการที่ระบุ: ดึงรูปจาก Drive (ผ่าน proxy) -> แปลงเวกเตอร์ + OCR -> บันทึก — ทำทีละรูป
+            // silent = โหมดซ่อมอัตโนมัติเบื้องหลัง (ไม่เด้ง alert ไม่ล็อกปุ่มค้นหา)
+            const indexingRef = useRef(false); // กันดัชนีวิ่งซ้อนกัน 2 ชุด (auto + กดปุ่มเอง)
+            const runIndexing = async (targets, silent = false) => {
+                if (indexingRef.current) return;
+                indexingRef.current = true;
+                if (!silent) { setVisualBusy(true); setVisualMsg("กำลังโหลดโมเดล AI (ครั้งแรกอาจนานหน่อย)..."); }
+                setIndexProg({ done: 0, total: targets.length });
                 try {
                     const model = await loadVisionModel();
                     const newEmb = { ...embeddings };
                     const toSave = [];
                     for (let i = 0; i < targets.length; i++) {
                         const { partNo: p, fileId } = targets[i];
-                        setVisualMsg("กำลังประมวลผลรูปพาร์ท..."); setIndexProg({ done: i, total: targets.length });
+                        if (!silent) setVisualMsg("กำลังประมวลผลรูปพาร์ท...");
+                        setIndexProg({ done: i, total: targets.length });
                         try {
                             const res = await fetch(apiUrl, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ action: "get_image_b64", fileId }) });
                             const json = await res.json();
@@ -714,30 +737,63 @@
                     }
                     setIndexProg({ done: targets.length, total: targets.length });
                     if (toSave.length) {
-                        setVisualMsg("กำลังบันทึกดัชนี...");
+                        if (!silent) setVisualMsg("กำลังบันทึกดัชนี...");
                         await fetch(apiUrl, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ action: "save_embeddings", items: toSave }) });
                     }
                     setEmbeddings(newEmb);
-                    alert("สร้างดัชนีรูปเสร็จ: " + toSave.length + " รูป");
+                    if (!silent) alert("สร้างดัชนีรูปเสร็จ: " + toSave.length + " รูป");
                 } catch (e) {
-                    alert("สร้างดัชนีไม่สำเร็จ: " + e.message);
-                } finally { setVisualBusy(false); setVisualMsg(""); }
+                    if (!silent) alert("สร้างดัชนีไม่สำเร็จ: " + e.message);
+                    else console.log("auto-heal index failed", e);
+                } finally {
+                    indexingRef.current = false;
+                    if (!silent) { setVisualBusy(false); setVisualMsg(""); }
+                    setIndexProg({ done: 0, total: 0 });
+                }
             };
+
+            const buildIndex = async () => {
+                if (!apiUrl) return alert("ยังไม่ได้ตั้งค่า API URL");
+                if (indexingRef.current) return alert("กำลังประมวลผลดัชนีอยู่แล้ว — รอให้รอบปัจจุบันเสร็จก่อน");
+                const targets = findUnindexed();
+                if (targets.length === 0) return alert("ดัชนีรูปครบแล้ว — ไม่มีรูปใหม่ให้ประมวลผล");
+                await runIndexing(targets, false);
+            };
+
+            // ซ่อมดัชนีอัตโนมัติ: รูปที่หลุดจากการปิดแอปก่อน auto-index เสร็จ จะถูกเก็บตกให้เองตอนเปิดหน้านี้
+            // ข้ามรูปที่เพิ่งอัปภายใน 3 นาที เพราะ auto-index ของมันอาจกำลังวิ่งอยู่ในแท็บนี้/แท็บอื่น
+            const [autoHealing, setAutoHealing] = useState(false);
+            const autoHealedRef = useRef(false); // ซ่อมครั้งเดียวต่อการเปิดหน้า พอแล้ว — ไม่วนซ้ำกินแบต/โควต้า OCR
+            useEffect(() => {
+                if (!embLoaded || !apiUrl || autoHealedRef.current) return;
+                const targets = findUnindexed(3 * 60 * 1000);
+                if (targets.length === 0) return;
+                autoHealedRef.current = true;
+                setAutoHealing(true);
+                runIndexing(targets, true).finally(() => setAutoHealing(false));
+            }, [embLoaded]);
 
             const handleQueryImage = async (e) => {
                 const file = e.target.files[0]; e.target.value = "";
                 if (!file) return;
-                if (Object.keys(embeddings).length === 0) return alert("ยังไม่มีดัชนีรูป — กดปุ่ม 'สร้าง/อัปเดตดัชนีรูป' ก่อน");
+                if (Object.keys(embeddings).length === 0) {
+                    return alert(indexingRef.current
+                        ? "กำลังสร้างดัชนีรูปอยู่เบื้องหลัง — รอสักครู่แล้วลองค้นหาใหม่"
+                        : "ยังไม่มีดัชนีรูป — กดปุ่ม 'สร้าง/อัปเดตดัชนีรูป' ก่อน");
+                }
                 setVisualBusy(true); setVisualMsg("กำลังวิเคราะห์รูป..."); setVisualResults(null); setQueryFile(file); setQueryEmbedding(null);
                 try {
                     const dataUrl = await new Promise((res) => { const r = new FileReader(); r.onload = ev => res(ev.target.result); r.readAsDataURL(file); });
                     setQueryPreview(dataUrl);
+                    // OCR รูปที่ถ่ายควบคู่ไปกับการแปลงเวกเตอร์ (ไม่ต้องรอต่อกัน) — และข้ามไปเลยถ้าดัชนียังไม่มีตัวหนังสือให้เทียบ
+                    const anyIndexedText = Object.values(embeddings).some(list => list.some(it => it.tokens && it.tokens.size > 0));
+                    const ocrPromise = anyIndexedText ? ocrImageB64(apiUrl, dataUrl.split(',')[1]) : Promise.resolve("");
                     const model = await loadVisionModel();
                     const img = await fileToImageEl(file);
                     const q = await embedImageEl(model, img);
                     setQueryEmbedding(q);
-                    setVisualMsg("กำลังอ่านตัวหนังสือในรูป...");
-                    const queryTokens = ocrTokens(await ocrImageB64(apiUrl, dataUrl.split(',')[1])); // อ่าน label/ตัวหนังสือในรูปที่ถ่าย ไว้เทียบกับที่เคย OCR เก็บไว้ตอนทำดัชนี
+                    if (anyIndexedText) setVisualMsg("กำลังอ่านตัวหนังสือในรูป...");
+                    const queryTokens = ocrTokens(await ocrPromise); // อ่าน label/ตัวหนังสือในรูปที่ถ่าย ไว้เทียบกับที่เคย OCR เก็บไว้ตอนทำดัชนี
                     const scored = Object.keys(embeddings).map(p => {
                         const posScore = Math.max(...embeddings[p].map(it => cosineSim(q, it.vector)));
                         const negSim = negatives[p] ? Math.max(0, ...negatives[p].map(v => cosineSim(q, v))) : 0;
@@ -795,7 +851,7 @@
             };
 
             return {
-                embeddings, embLoaded, negatives, visualBusy, visualMsg, indexProg,
+                embeddings, embLoaded, negatives, visualBusy, visualMsg, indexProg, autoHealing,
                 queryPreview, setQueryPreview, queryFile, queryEmbedding, visualResults, setVisualResults,
                 buildIndex, handleQueryImage, rejectMatch, undoRejectMatch, clearNegativeExamples
             };
@@ -1763,7 +1819,7 @@
 
             const imgSearchRef = useRef(null);
             const {
-                embeddings, negatives, visualBusy, visualMsg, indexProg,
+                embeddings, negatives, visualBusy, visualMsg, indexProg, autoHealing,
                 queryPreview, queryFile, visualResults,
                 buildIndex, handleQueryImage, rejectMatch, undoRejectMatch, clearNegativeExamples
             } = useVisualSearch(apiUrl, partImages, partNameMap);
@@ -1885,6 +1941,12 @@
                             <div className="text-sm text-slate-600 flex items-center gap-2">
                                 <div className="loader" style={{width:16,height:16,borderWidth:2}}></div>
                                 <span>{visualMsg}{indexProg.total ? ` (${indexProg.done}/${indexProg.total})` : ''}</span>
+                            </div>
+                        )}
+                        {autoHealing && !visualBusy && (
+                            <div className="text-xs text-slate-400 flex items-center gap-2">
+                                <div className="loader" style={{width:12,height:12,borderWidth:2}}></div>
+                                <span>กำลังเก็บตกดัชนีรูปที่ค้างอยู่เบื้องหลัง{indexProg.total ? ` (${indexProg.done}/${indexProg.total})` : ''} — ค้นหาได้ตามปกติ</span>
                             </div>
                         )}
                         {(queryPreview || visualResults) && (
