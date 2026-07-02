@@ -153,6 +153,68 @@
             } catch (e) { return null; }
         };
         const cosineSim = (a, b) => { let s = 0; const n = Math.min(a.length, b.length); for (let i = 0; i < n; i++) s += a[i] * b[i]; return s; };
+
+        // ===== ตรวจรายละเอียดเชิงลึก (patch embedding) — ใช้ตอนคะแนนสูสี แยกพาร์ทที่ต่างกันแค่จุดเล็ก ๆ เช่น จำนวนรู =====
+        // MobileNet ทั้งภาพจะเฉลี่ยรายละเอียดเล็ก ๆ ทิ้ง — หั่นรูปเป็น 4 มุม + กลางภาพ แล้ว embed แยกทีละส่วน
+        // รูที่หายไป 1 รูจะโผล่เป็นความต่างชัด ๆ ในส่วนนั้น แทนที่จะจมหายไปในค่าเฉลี่ยทั้งภาพ
+        const embedImagePatches = async (model, imgEl) => {
+            const W = imgEl.naturalWidth || imgEl.width, H = imgEl.naturalHeight || imgEl.height;
+            const hw = Math.floor(W / 2), hh = Math.floor(H / 2);
+            const regions = [
+                [0, 0, hw, hh], [W - hw, 0, hw, hh],                     // บนซ้าย, บนขวา
+                [0, H - hh, hw, hh], [W - hw, H - hh, hw, hh],           // ล่างซ้าย, ล่างขวา
+                [Math.floor(W / 4), Math.floor(H / 4), hw, hh]           // กลางภาพ
+            ];
+            const c = document.createElement('canvas'); c.width = 224; c.height = 224;
+            const ctx = c.getContext('2d');
+            const out = [];
+            for (const [sx, sy, sw, sh] of regions) {
+                ctx.clearRect(0, 0, 224, 224);
+                ctx.drawImage(imgEl, sx, sy, sw, sh, 0, 0, 224, 224);
+                out.push(await embedImageEl(model, c));
+            }
+            return out;
+        };
+        // ความคล้ายระหว่างชุด patch 2 ชุด แบบจับคู่ที่ดีที่สุด (ทนต่อการถ่ายเยื้องตำแหน่งกันเล็กน้อย):
+        // แต่ละ patch ฝั่งหนึ่งหาคู่ที่เหมือนสุดจากอีกฝั่ง แล้วเฉลี่ยทั้ง 2 ทิศ — ถ้ามี patch ที่หาคู่ดี ๆ ไม่ได้ (รายละเอียดต่างกัน) ค่าเฉลี่ยจะตกลงชัดเจน
+        const patchSetSim = (A, B) => {
+            const oneWay = (X, Y) => X.reduce((s, x) => s + Math.max(...Y.map(y => cosineSim(x, y))), 0) / X.length;
+            return (oneWay(A, B) + oneWay(B, A)) / 2;
+        };
+
+        // ===== เช็คเร็ว ๆ ว่ารูป "น่าจะมีตัวหนังสือ" ไหม — ไว้ข้ามการส่ง OCR (ประหยัดเวลารอ + โควต้า) =====
+        // หลักการ: ตัวหนังสือ = หย่อมของขอบคอนทราสต์สูงถี่ ๆ — สแกนเป็น cell เล็ก ๆ หา cell ที่ขอบหนาแน่นแบบนั้น
+        // ตั้งเกณฑ์แบบขี้ระแวง: สงสัยว่ามีก็ตอบ "มี" ไว้ก่อน (แค่เสีย OCR หนึ่งรอบเท่าพฤติกรรมเดิม) — ตอบ "ไม่มี" เฉพาะรูปที่เกลี้ยงจริง ๆ
+        const TEXT_EDGE_MIN_CONTRAST = 48; // ความต่างความสว่างระหว่างพิกเซลติดกันขั้นต่ำที่นับเป็น "ขอบคม"
+        const TEXT_CELL_MIN_DENSITY = 0.08; // สัดส่วนพิกเซลขอบคมใน cell ที่ถือว่าหนาแน่นระดับตัวหนังสือ
+        const mightContainText = (imgEl) => {
+            try {
+                const W = 256;
+                const srcW = imgEl.naturalWidth || imgEl.width || W;
+                const srcH = imgEl.naturalHeight || imgEl.height || W;
+                const H = Math.max(32, Math.round(srcH * W / srcW));
+                const c = document.createElement('canvas'); c.width = W; c.height = H;
+                const ctx = c.getContext('2d', { willReadFrequently: true });
+                ctx.drawImage(imgEl, 0, 0, W, H);
+                const d = ctx.getImageData(0, 0, W, H).data;
+                const g = new Float32Array(W * H);
+                for (let i = 0, j = 0; i < g.length; i++, j += 4) g[i] = 0.299 * d[j] + 0.587 * d[j + 1] + 0.114 * d[j + 2];
+                const cell = 16, cols = Math.floor(W / cell), rows = Math.floor(H / cell);
+                for (let cy = 0; cy < rows; cy++) {
+                    for (let cx = 0; cx < cols; cx++) {
+                        let edges = 0;
+                        for (let y = cy * cell; y < (cy + 1) * cell - 1; y++) {
+                            for (let x = cx * cell; x < (cx + 1) * cell - 1; x++) {
+                                const i = y * W + x;
+                                if (Math.abs(g[i] - g[i + 1]) > TEXT_EDGE_MIN_CONTRAST || Math.abs(g[i] - g[i + W]) > TEXT_EDGE_MIN_CONTRAST) edges++;
+                            }
+                        }
+                        if (edges / (cell * cell) >= TEXT_CELL_MIN_DENSITY) return true;
+                    }
+                }
+                return false;
+            } catch (e) { return true; } // เช็คไม่ได้ (เช่น canvas ใช้ไม่ได้) = ถือว่ามี ส่ง OCR ตามเดิม ไม่เสียความแม่นยำ
+        };
         const fileToImageEl = (file) => new Promise((res, rej) => {
             const r = new FileReader();
             r.onerror = () => rej(new Error('อ่านไฟล์ไม่ได้'));
@@ -647,6 +709,10 @@
         const NEG_EXAMPLE_MAX_PENALTY = 0.25;   // เพดานหักคะแนนสูงสุด — กันไม่ให้ตัวอย่างลบตัวเดียว (เช่นกดพลาด) ลบคะแนนบวกที่สูงจริง ๆ จนหลุดผลค้นหาไปเลย
         const REJECT_DISABLED_ABOVE_SCORE = 0.6; // ความเหมือนสูงกว่านี้ถือว่าน่าจะถูกจริง ๆ ปิดปุ่ม "ไม่ใช่" กันกดพลาดไปสร้างตัวอย่างลบผิด ๆ
         const OCR_TEXT_MATCH_WEIGHT = 0.3;       // โบนัสคะแนนสูงสุดจากตัวหนังสือ/label ที่ตรงกัน (ตัวหนังสือตรงเป๊ะ = +0.3)
+        const MIN_RESULT_SCORE = 0.5;            // ตัดผลที่ความเหมือนต่ำกว่านี้ทิ้ง (หลังหักคะแนนตัวอย่างลบแล้ว)
+        const DETAIL_RERANK_MARGIN = 0.06;       // อันดับต้น ๆ คะแนนห่างกันน้อยกว่านี้ = สูสีจนไว้ใจไม่ได้ ต้องตรวจรายละเอียดเชิงลึกเพิ่ม
+        const DETAIL_RERANK_MAX = 4;             // ตรวจเชิงลึกอย่างมากกี่พาร์ท (แต่ละพาร์ทต้องดึงรูป + embed 5 patch — จำกัดไว้ไม่ให้ช้า)
+        const DETAIL_SCORE_WEIGHT = 0.45;        // น้ำหนักคะแนนรายละเอียดตอนผสมกับคะแนนภาพรวม (0 = ไม่สน, 1 = ใช้รายละเอียดล้วน)
 
         const useVisualSearch = (apiUrl, partImages = {}, partNameMap = {}) => {
             const [embeddings, setEmbeddings] = useState({});
@@ -659,6 +725,8 @@
             const [queryFile, setQueryFile] = useState(null); // ไฟล์รูปที่ใช้ค้นหาล่าสุด — เก็บไว้เผื่อ user ยืนยันแล้วอยากบันทึกเป็นรูปของพาร์ทนั้นเลย
             const [queryEmbedding, setQueryEmbedding] = useState(null); // เวกเตอร์ของรูปที่ค้นหาล่าสุด — ใช้ตอนกด "ไม่ใช่พาร์ทนี้" โดยไม่ต้องคำนวณซ้ำ
             const [visualResults, setVisualResults] = useState(null);
+            const [visualNotice, setVisualNotice] = useState(""); // ข้อความเตือนประกอบผลค้นหา เช่น "คะแนนสูสี ตรวจรายละเอียดแล้ว โปรดเช็คจำนวนรูก่อนยืนยัน"
+            const patchCacheRef = useRef({}); // fileId -> patch vectors ที่คำนวณแล้ว — ค้นซ้ำรูปเดิมไม่ต้องดึง/embed ใหม่ (อยู่แค่ในหน่วยความจำต่อ session)
 
             const loadEmbeddings = React.useCallback(async () => {
                 if (!apiUrl) { setEmbLoaded(true); return; }
@@ -739,7 +807,10 @@
                             const img = await dataUrlToImageEl("data:" + (json.mimeType || "image/jpeg") + ";base64," + json.base64);
                             const vec = await embedImageEl(model, img);
                             // อ่านตัวหนังสือ/label บนพาร์ทเก็บไว้เทียบด้วย — "·" = อ่านแล้วแต่ไม่มีตัวหนังสือ (กันไม่ให้ถูกจับมาประมวลผลซ้ำทุกครั้ง)
-                            const ocrText = (await ocrImageB64(apiUrl, json.base64, json.mimeType || "image/jpeg")) || "·";
+                            // เช็คในเครื่องก่อน (~10ms) ว่ารูปมีตัวหนังสือให้อ่านไหม — รูปพาร์ทเกลี้ยง ๆ ข้าม OCR ไปเลย ประหยัดเวลารอ backend และโควต้า OCR
+                            const ocrText = mightContainText(img)
+                                ? ((await ocrImageB64(apiUrl, json.base64, json.mimeType || "image/jpeg")) || "·")
+                                : "·";
                             newEmb[p] = [...(newEmb[p] || []).filter(it => it.fileId !== fileId), { fileId, vector: vec, tokens: ocrTokens(ocrText), hasOcr: true }];
                             toSave.push({ partNo: p, fileId, embedding: embToB64(vec), ocrText });
                         } catch (err) { console.log("index fail", p, fileId, err); }
@@ -791,31 +862,71 @@
                         ? "กำลังสร้างดัชนีรูปอยู่เบื้องหลัง — รอสักครู่แล้วลองค้นหาใหม่"
                         : "ยังไม่มีดัชนีรูป — กดปุ่ม 'สร้าง/อัปเดตดัชนีรูป' ก่อน");
                 }
-                setVisualBusy(true); setVisualMsg("กำลังวิเคราะห์รูป..."); setVisualResults(null); setQueryFile(file); setQueryEmbedding(null);
+                setVisualBusy(true); setVisualMsg("กำลังวิเคราะห์รูป..."); setVisualResults(null); setVisualNotice(""); setQueryFile(file); setQueryEmbedding(null);
                 try {
                     const dataUrl = await new Promise((res) => { const r = new FileReader(); r.onload = ev => res(ev.target.result); r.readAsDataURL(file); });
                     setQueryPreview(dataUrl);
-                    // OCR รูปที่ถ่ายควบคู่ไปกับการแปลงเวกเตอร์ (ไม่ต้องรอต่อกัน) — และข้ามไปเลยถ้าดัชนียังไม่มีตัวหนังสือให้เทียบ
-                    const anyIndexedText = Object.values(embeddings).some(list => list.some(it => it.tokens && it.tokens.size > 0));
-                    const ocrPromise = anyIndexedText ? ocrImageB64(apiUrl, dataUrl.split(',')[1]) : Promise.resolve("");
                     const model = await loadVisionModel();
                     const img = await fileToImageEl(file);
                     const q = await embedImageEl(model, img);
                     setQueryEmbedding(q);
-                    if (anyIndexedText) setVisualMsg("กำลังอ่านตัวหนังสือในรูป...");
-                    const queryTokens = ocrTokens(await ocrPromise); // อ่าน label/ตัวหนังสือในรูปที่ถ่าย ไว้เทียบกับที่เคย OCR เก็บไว้ตอนทำดัชนี
+                    // ขั้นที่ 1: คะแนนภาพรวมอย่างเดียวก่อน (เร็ว ทำในเครื่องล้วน ๆ) — ยังไม่แตะ OCR
                     const scored = Object.keys(embeddings).map(p => {
-                        const posScore = Math.max(...embeddings[p].map(it => cosineSim(q, it.vector)));
+                        let posScore = -1, bestFileId = null;
+                        embeddings[p].forEach(it => { const s = cosineSim(q, it.vector); if (s > posScore) { posScore = s; bestFileId = it.fileId; } });
                         const negSim = negatives[p] ? Math.max(0, ...negatives[p].map(v => cosineSim(q, v))) : 0;
                         // จำกัดเพดานการหักคะแนน กันไม่ให้ตัวอย่างลบเพียงอันเดียว (เช่นกดพลาด) ลบล้างคะแนนบวกที่สูงจริง ๆ ทิ้งไปทั้งหมด
                         const penalty = Math.min(negSim * NEG_EXAMPLE_PENALTY_WEIGHT, NEG_EXAMPLE_MAX_PENALTY);
-                        // โบนัสจากตัวหนังสือ/label ตรงกัน — ช่วยแยกพาร์ทที่หน้าตาเหมือนกันแต่พิมพ์เบอร์/ยี่ห้อต่างกัน
-                        const textSim = Math.max(0, ...embeddings[p].map(it => ocrTextSim(queryTokens, it.tokens || new Set())));
-                        const score = Math.min(1, posScore - penalty + textSim * OCR_TEXT_MATCH_WEIGHT);
-                        return { partNo: p, name: partNameMap[p] || "", score, textSim };
+                        const base = posScore - penalty;
+                        return { partNo: p, name: partNameMap[p] || "", base, bestFileId, score: Math.min(1, base), textSim: 0 };
                     });
+                    // ขั้นที่ 2: OCR เฉพาะเมื่อคุ้มจริง ๆ — (ก) มีตัวเต็งที่โบนัสตัวหนังสือ (+0.3 สูงสุด) ยังดันขึ้นถึงเกณฑ์แสดงผลได้
+                    // และพาร์ทนั้นมีตัวหนังสือในดัชนีให้เทียบ (ข) รูปที่ถ่ายดูมีตัวหนังสือจริง (เช็คในเครื่อง ~10ms) — ไม่เข้าเงื่อนไขก็ข้าม ไม่เสียเวลารอ backend
+                    const ocrWorthIt = scored.some(r =>
+                        r.base >= MIN_RESULT_SCORE - OCR_TEXT_MATCH_WEIGHT &&
+                        embeddings[r.partNo].some(it => it.tokens && it.tokens.size > 0));
+                    if (ocrWorthIt && mightContainText(img)) {
+                        setVisualMsg("กำลังอ่านตัวหนังสือในรูป...");
+                        const queryTokens = ocrTokens(await ocrImageB64(apiUrl, dataUrl.split(',')[1]));
+                        if (queryTokens.size > 0) scored.forEach(r => {
+                            // โบนัสจากตัวหนังสือ/label ตรงกัน — ช่วยแยกพาร์ทที่หน้าตาเหมือนกันแต่พิมพ์เบอร์/ยี่ห้อต่างกัน
+                            r.textSim = Math.max(0, ...embeddings[r.partNo].map(it => ocrTextSim(queryTokens, it.tokens || new Set())));
+                            r.score = Math.min(1, r.base + r.textSim * OCR_TEXT_MATCH_WEIGHT);
+                        });
+                    }
                     scored.sort((a, b) => b.score - a.score);
-                    const filtered = scored.filter(r => r.score >= 0.5); // ตัดผลที่ความเหมือนต่ำกว่า 50% ทิ้ง (หลังหักคะแนนตัวอย่างลบแล้ว)
+                    const filtered = scored.filter(r => r.score >= MIN_RESULT_SCORE);
+                    // ขั้นที่ 3: อันดับต้น ๆ คะแนนสูสีกันมาก = ภาพรวมแยกไม่ออก (เช่น พาร์ทต่างกันแค่จำนวนรู) —
+                    // ตรวจรายละเอียดเชิงลึกเฉพาะกลุ่มตัวเต็ง: หั่นรูปเป็นส่วน ๆ เทียบทีละส่วน จุดต่างเล็ก ๆ จะไม่ถูกเฉลี่ยกลืนหาย
+                    if (filtered.length >= 2 && filtered[0].score - filtered[1].score < DETAIL_RERANK_MARGIN) {
+                        const group = filtered.filter(r => filtered[0].score - r.score < DETAIL_RERANK_MARGIN).slice(0, DETAIL_RERANK_MAX);
+                        if (group.length >= 2) {
+                            setVisualMsg("คะแนนสูสี — กำลังตรวจรายละเอียดเชิงลึก (รู/ร่อง/จุดต่างเล็ก ๆ)...");
+                            try {
+                                const qPatches = await embedImagePatches(model, img);
+                                for (const r of group) {
+                                    if (!r.bestFileId) continue;
+                                    let cPatches = patchCacheRef.current[r.bestFileId];
+                                    if (!cPatches) {
+                                        const res = await fetch(apiUrl, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ action: "get_image_b64", fileId: r.bestFileId }) });
+                                        const json = await res.json();
+                                        if (json.status !== "success" || !json.base64) continue;
+                                        const cImg = await dataUrlToImageEl("data:" + (json.mimeType || "image/jpeg") + ";base64," + json.base64);
+                                        cPatches = await embedImagePatches(model, cImg);
+                                        patchCacheRef.current[r.bestFileId] = cPatches;
+                                    }
+                                    r.detail = patchSetSim(qPatches, cPatches);
+                                    r.score = Math.min(1, r.score * (1 - DETAIL_SCORE_WEIGHT) + r.detail * DETAIL_SCORE_WEIGHT);
+                                }
+                                filtered.sort((a, b) => b.score - a.score);
+                                setVisualNotice("อันดับต้น ๆ หน้าตาใกล้กันมาก ระบบตรวจรายละเอียดเชิงลึกให้แล้ว — ก่อนยืนยัน โปรดเช็ครายละเอียดเล็ก ๆ เช่น จำนวนรู/ร่อง เทียบกับรูปตัวอย่างอีกครั้ง");
+                            } catch (err) {
+                                // ตรวจเชิงลึกพลาด (เช่น ดึงรูปไม่ได้) ไม่ใช่เหตุให้การค้นหาล้ม — ใช้คะแนนภาพรวมเดิม แต่ยังเตือนให้คนเช็คเอง
+                                console.log("detail re-rank failed", err);
+                                setVisualNotice("อันดับต้น ๆ คะแนนสูสีกันมาก — โปรดเช็ครายละเอียดเล็ก ๆ เช่น จำนวนรู/ร่อง เทียบกับรูปตัวอย่างก่อนยืนยัน");
+                            }
+                        }
+                    }
                     setVisualResults(filtered.slice(0, 12));
                 } catch (err) {
                     alert("ค้นหาด้วยรูปไม่สำเร็จ: " + err.message);
@@ -862,7 +973,7 @@
 
             return {
                 embeddings, embLoaded, negatives, visualBusy, visualMsg, indexProg, autoHealing,
-                queryPreview, setQueryPreview, queryFile, queryEmbedding, visualResults, setVisualResults,
+                queryPreview, setQueryPreview, queryFile, queryEmbedding, visualResults, setVisualResults, visualNotice,
                 buildIndex, handleQueryImage, rejectMatch, undoRejectMatch, clearNegativeExamples
             };
         };
@@ -1830,7 +1941,7 @@
             const imgSearchRef = useRef(null);
             const {
                 embeddings, negatives, visualBusy, visualMsg, indexProg, autoHealing,
-                queryPreview, queryFile, visualResults,
+                queryPreview, queryFile, visualResults, visualNotice,
                 buildIndex, handleQueryImage, rejectMatch, undoRejectMatch, clearNegativeExamples
             } = useVisualSearch(apiUrl, partImages, partNameMap);
 
@@ -1959,6 +2070,12 @@
                                 <span>กำลังเก็บตกดัชนีรูปที่ค้างอยู่เบื้องหลัง{indexProg.total ? ` (${indexProg.done}/${indexProg.total})` : ''} — ค้นหาได้ตามปกติ</span>
                             </div>
                         )}
+                        {visualNotice && visualResults && visualResults.length > 0 && (
+                            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-800 flex items-start gap-2">
+                                <i className="fa-solid fa-triangle-exclamation mt-0.5"></i>
+                                <span>{visualNotice}</span>
+                            </div>
+                        )}
                         {(queryPreview || visualResults) && (
                             <div className="flex flex-col sm:flex-row gap-4 items-start">
                                 {queryPreview && (
@@ -1981,7 +2098,10 @@
                                                     <div className="text-[11px] text-slate-500 truncate" title={r.name}>{r.name}</div>
                                                     <div className="mt-1 h-1.5 bg-slate-100 rounded overflow-hidden"><div className="h-full bg-indigo-500" style={{width: Math.max(2,Math.round(r.score*100))+'%'}}></div></div>
                                                     <div className="text-[10px] text-slate-400 text-right flex items-center justify-between">
-                                                        <span>{r.textSim > 0.2 ? <span className="text-amber-600 font-bold"><i className="fa-solid fa-tag mr-0.5"></i>ตัวหนังสือตรง</span> : null}</span>
+                                                        <span>
+                                                            {r.textSim > 0.2 ? <span className="text-amber-600 font-bold"><i className="fa-solid fa-tag mr-0.5"></i>ตัวหนังสือตรง</span> : null}
+                                                            {r.detail != null ? <span className="text-purple-600 font-bold ml-1" title="เทียบรายละเอียดทีละส่วนของภาพ (แยกจุดต่างเล็ก ๆ เช่น จำนวนรู)"><i className="fa-solid fa-magnifying-glass-plus mr-0.5"></i>ละเอียด {Math.round(r.detail*100)}%</span> : null}
+                                                        </span>
                                                         <span>{Math.round(r.score*100)}%</span>
                                                     </div>
                                                     {feedbackFor[r.partNo] ? (
