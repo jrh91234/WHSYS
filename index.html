@@ -799,6 +799,7 @@
         const DETAIL_SCORE_WEIGHT = 0.45;        // น้ำหนักคะแนนรายละเอียดตอนผสมกับคะแนนภาพรวม (0 = ไม่สน, 1 = ใช้รายละเอียดล้วน)
         const COLOR_SCORE_SPAN = 0.2;            // ช่วงผลของสีต่อคะแนน: สีตรงเป๊ะ +0.1 / สีคนละเรื่อง -0.1 (คูณจาก colorSim-0.5)
         const COLOR_MISMATCH_BADGE = 0.35;       // colorSim ต่ำกว่านี้ขึ้นป้าย "สีต่าง" เตือนบนการ์ดผลลัพธ์
+        const HIGH_CONFIDENCE_CUTOFF = 0.9;      // ตัวท็อปมั่นใจถึงเกณฑ์นี้ = ตัดตัวเลือกที่คะแนนต่ำกว่าเกณฑ์ทิ้ง ไม่ให้กวนสายตาจนหยิบผิด
 
         const useVisualSearch = (apiUrl, partImages = {}, partNameMap = {}) => {
             const [embeddings, setEmbeddings] = useState({});
@@ -1038,7 +1039,15 @@
                             }
                         }
                     }
-                    setVisualResults(filtered.slice(0, 12));
+                    // มั่นใจสูง: ตัวท็อปถึงเกณฑ์ (หลังผ่านทุกขั้นรวมถึงตรวจเชิงลึกแล้ว) — ตัดตัวเลือกที่คะแนนไม่ถึงเกณฑ์ทิ้ง
+                    // เหลือเฉพาะตัวที่มั่นใจจริง คนหน้างานจะได้ไม่เผลอหยิบตัวคะแนนต่ำที่แค่บังเอิญโผล่มาด้วย
+                    let finalResults = filtered;
+                    if (filtered.length > 1 && filtered[0].score >= HIGH_CONFIDENCE_CUTOFF) {
+                        finalResults = filtered.filter(r => r.score >= HIGH_CONFIDENCE_CUTOFF);
+                        // เหลือตัวเดียว = ชัดเจนแล้ว ไม่ต้องโชว์ป้ายเตือน "คะแนนสูสี" ให้สับสน
+                        if (finalResults.length === 1) setVisualNotice("");
+                    }
+                    setVisualResults(finalResults.slice(0, 12));
                 } catch (err) {
                     alert("ค้นหาด้วยรูปไม่สำเร็จ: " + err.message);
                 } finally { setVisualBusy(false); setVisualMsg(""); }
