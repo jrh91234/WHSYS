@@ -904,20 +904,24 @@
                             setVisualMsg("คะแนนสูสี — กำลังตรวจรายละเอียดเชิงลึก (รู/ร่อง/จุดต่างเล็ก ๆ)...");
                             try {
                                 const qPatches = await embedImagePatches(model, img);
+                                // คำนวณคะแนนใหม่พักไว้ก่อน แล้วค่อยใส่จริงเมื่อครบทุกพาร์ทในกลุ่ม —
+                                // ถ้าพลาดกลางคัน (เช่น ดึงรูปพาร์ทใดไม่ได้) จะได้ไม่เหลือคะแนนครึ่ง rerank ครึ่งเดิมปนกันจนอันดับในกลุ่มเพี้ยน
+                                const reranked = [];
                                 for (const r of group) {
-                                    if (!r.bestFileId) continue;
+                                    if (!r.bestFileId) throw new Error("no indexed image for " + r.partNo);
                                     let cPatches = patchCacheRef.current[r.bestFileId];
                                     if (!cPatches) {
                                         const res = await fetch(apiUrl, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ action: "get_image_b64", fileId: r.bestFileId }) });
                                         const json = await res.json();
-                                        if (json.status !== "success" || !json.base64) continue;
+                                        if (json.status !== "success" || !json.base64) throw new Error("fetch image failed for " + r.partNo);
                                         const cImg = await dataUrlToImageEl("data:" + (json.mimeType || "image/jpeg") + ";base64," + json.base64);
                                         cPatches = await embedImagePatches(model, cImg);
                                         patchCacheRef.current[r.bestFileId] = cPatches;
                                     }
-                                    r.detail = patchSetSim(qPatches, cPatches);
-                                    r.score = Math.min(1, r.score * (1 - DETAIL_SCORE_WEIGHT) + r.detail * DETAIL_SCORE_WEIGHT);
+                                    const detail = patchSetSim(qPatches, cPatches);
+                                    reranked.push({ r, detail, score: Math.min(1, r.score * (1 - DETAIL_SCORE_WEIGHT) + detail * DETAIL_SCORE_WEIGHT) });
                                 }
+                                reranked.forEach(({ r, detail, score }) => { r.detail = detail; r.score = score; });
                                 filtered.sort((a, b) => b.score - a.score);
                                 setVisualNotice("อันดับต้น ๆ หน้าตาใกล้กันมาก ระบบตรวจรายละเอียดเชิงลึกให้แล้ว — ก่อนยืนยัน โปรดเช็ครายละเอียดเล็ก ๆ เช่น จำนวนรู/ร่อง เทียบกับรูปตัวอย่างอีกครั้ง");
                             } catch (err) {
