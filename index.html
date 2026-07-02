@@ -707,6 +707,14 @@
                 return targets;
             };
 
+            // component นี้ถูก unmount ตอนสลับไปหน้าอื่น แต่ loop async ที่วิ่งอยู่ไม่ตายตาม —
+            // ต้องเช็คธงนี้ในทุกรอบ loop ไม่งั้นสลับหน้าไปมาจะได้ loop ซ้อนกันหลายชุดทำงานซ้ำซ้อน
+            const isMountedRef = useRef(true);
+            useEffect(() => {
+                isMountedRef.current = true;
+                return () => { isMountedRef.current = false; };
+            }, []);
+
             // ประมวลผลดัชนีตามรายการที่ระบุ: ดึงรูปจาก Drive (ผ่าน proxy) -> แปลงเวกเตอร์ + OCR -> บันทึก — ทำทีละรูป
             // silent = โหมดซ่อมอัตโนมัติเบื้องหลัง (ไม่เด้ง alert ไม่ล็อกปุ่มค้นหา)
             const indexingRef = useRef(false); // กันดัชนีวิ่งซ้อนกัน 2 ชุด (auto + กดปุ่มเอง)
@@ -720,6 +728,7 @@
                     const newEmb = { ...embeddings };
                     const toSave = [];
                     for (let i = 0; i < targets.length; i++) {
+                        if (!isMountedRef.current) break; // ออกจากหน้าแล้ว หยุดงานหนัก — รูปที่เหลือรอบเปิดหน้าครั้งถัดไปเก็บตกต่อ
                         const { partNo: p, fileId } = targets[i];
                         if (!silent) setVisualMsg("กำลังประมวลผลรูปพาร์ท...");
                         setIndexProg({ done: i, total: targets.length });
@@ -736,15 +745,16 @@
                         } catch (err) { console.log("index fail", p, fileId, err); }
                     }
                     setIndexProg({ done: targets.length, total: targets.length });
+                    // บันทึกส่วนที่ประมวลผลไปแล้วเสมอ (แม้ถูกตัดจบเพราะออกจากหน้า) — งานที่ทำแล้วจะได้ไม่สูญเปล่า
                     if (toSave.length) {
                         if (!silent) setVisualMsg("กำลังบันทึกดัชนี...");
                         await fetch(apiUrl, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ action: "save_embeddings", items: toSave }) });
                     }
                     setEmbeddings(newEmb);
-                    if (!silent) alert("สร้างดัชนีรูปเสร็จ: " + toSave.length + " รูป");
+                    if (!silent && isMountedRef.current) alert("สร้างดัชนีรูปเสร็จ: " + toSave.length + " รูป");
                 } catch (e) {
-                    if (!silent) alert("สร้างดัชนีไม่สำเร็จ: " + e.message);
-                    else console.log("auto-heal index failed", e);
+                    if (!silent && isMountedRef.current) alert("สร้างดัชนีไม่สำเร็จ: " + e.message);
+                    else console.log("index failed", e);
                 } finally {
                     indexingRef.current = false;
                     if (!silent) { setVisualBusy(false); setVisualMsg(""); }
