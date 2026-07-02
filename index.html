@@ -183,10 +183,15 @@
         };
 
         // ===== เช็คเร็ว ๆ ว่ารูป "น่าจะมีตัวหนังสือ" ไหม — ไว้ข้ามการส่ง OCR (ประหยัดเวลารอ + โควต้า) =====
-        // หลักการ: ตัวหนังสือ = หย่อมของขอบคอนทราสต์สูงถี่ ๆ — สแกนเป็น cell เล็ก ๆ หา cell ที่ขอบหนาแน่นแบบนั้น
-        // ตั้งเกณฑ์แบบขี้ระแวง: สงสัยว่ามีก็ตอบ "มี" ไว้ก่อน (แค่เสีย OCR หนึ่งรอบเท่าพฤติกรรมเดิม) — ตอบ "ไม่มี" เฉพาะรูปที่เกลี้ยงจริง ๆ
-        const TEXT_EDGE_MIN_CONTRAST = 48; // ความต่างความสว่างระหว่างพิกเซลติดกันขั้นต่ำที่นับเป็น "ขอบคม"
-        const TEXT_CELL_MIN_DENSITY = 0.08; // สัดส่วนพิกเซลขอบคมใน cell ที่ถือว่าหนาแน่นระดับตัวหนังสือ
+        // หลักการ: cell ที่มีตัวหนังสือต่างจาก cell ที่แค่มีขอบวัตถุพาดผ่าน 3 อย่าง —
+        //   (1) ขอบคมหนาแน่นมาก (ลายเส้นตัวอักษรถี่ทุก 2-3 พิกเซล ไม่ใช่เส้นเดียว)
+        //   (2) ขอบมีทั้งแนวนอนและแนวตั้งปนกัน (ตัวอักษรมีเส้นทุกทิศ — ขอบพาร์ท/เงาเป็นเส้นตรงทิศเดียว)
+        //   (3) เจอ cell แบบนี้หลาย cell (ข้อความจริงกินพื้นที่กว้างกว่า 16px เสมอ)
+        // เกณฑ์ยังเอียงข้าง "เผื่อไว้": ผิวลายถี่ ๆ (knurling/ตะแกรง) อาจหลอกให้ตอบ "มี" ได้ = แค่เสีย OCR หนึ่งรอบเท่าพฤติกรรมเดิม
+        const TEXT_EDGE_MIN_CONTRAST = 48;  // ความต่างความสว่างระหว่างพิกเซลติดกันขั้นต่ำที่นับเป็น "ขอบคม"
+        const TEXT_CELL_MIN_DENSITY = 0.14; // สัดส่วนพิกเซลขอบคมใน cell ที่ถือว่าหนาแน่นระดับตัวหนังสือ (ขอบวัตถุเส้นเดียวพาดผ่านได้แค่ ~0.06-0.09)
+        const TEXT_DIRECTION_BALANCE = 0.25; // ทิศที่น้อยกว่า (นอน/ตั้ง) ต้องมีอย่างน้อยสัดส่วนนี้ของขอบทั้งหมดใน cell
+        const TEXT_MIN_BUSY_CELLS = 2;      // ต้องเจอ cell เข้าเกณฑ์อย่างน้อยกี่ cell ถึงถือว่ามีตัวหนังสือ
         const mightContainText = (imgEl) => {
             try {
                 const W = 256;
@@ -200,16 +205,25 @@
                 const g = new Float32Array(W * H);
                 for (let i = 0, j = 0; i < g.length; i++, j += 4) g[i] = 0.299 * d[j] + 0.587 * d[j + 1] + 0.114 * d[j + 2];
                 const cell = 16, cols = Math.floor(W / cell), rows = Math.floor(H / cell);
+                let busyCells = 0;
                 for (let cy = 0; cy < rows; cy++) {
                     for (let cx = 0; cx < cols; cx++) {
-                        let edges = 0;
+                        let edges = 0, hEdges = 0, vEdges = 0;
                         for (let y = cy * cell; y < (cy + 1) * cell - 1; y++) {
                             for (let x = cx * cell; x < (cx + 1) * cell - 1; x++) {
                                 const i = y * W + x;
-                                if (Math.abs(g[i] - g[i + 1]) > TEXT_EDGE_MIN_CONTRAST || Math.abs(g[i] - g[i + W]) > TEXT_EDGE_MIN_CONTRAST) edges++;
+                                const h = Math.abs(g[i] - g[i + 1]) > TEXT_EDGE_MIN_CONTRAST;
+                                const v = Math.abs(g[i] - g[i + W]) > TEXT_EDGE_MIN_CONTRAST;
+                                if (h) hEdges++;
+                                if (v) vEdges++;
+                                if (h || v) edges++;
                             }
                         }
-                        if (edges / (cell * cell) >= TEXT_CELL_MIN_DENSITY) return true;
+                        if (edges / (cell * cell) >= TEXT_CELL_MIN_DENSITY &&
+                            Math.min(hEdges, vEdges) >= TEXT_DIRECTION_BALANCE * (hEdges + vEdges)) {
+                            busyCells++;
+                            if (busyCells >= TEXT_MIN_BUSY_CELLS) return true;
+                        }
                     }
                 }
                 return false;
