@@ -149,6 +149,33 @@
         });
         const dataUrlToImageEl = (u) => new Promise((res, rej) => { const img = new Image(); img.onload = () => res(img); img.onerror = () => rej(new Error('รูปเสียหาย')); img.src = u; });
 
+        // ===== เทียบตัวหนังสือ/label บนพาร์ท (จาก OCR) — เสริมการเทียบหน้าตารูปของ MobileNet ที่อ่านตัวหนังสือไม่ได้ =====
+        // แตกข้อความ OCR เป็นคำ ๆ (token) แบบหยาบ: ตัวพิมพ์เล็กทั้งหมด เก็บเฉพาะ a-z/0-9/ไทย ยาวอย่างน้อย 2 ตัวอักษร
+        const ocrTokens = (text) => {
+            const m = String(text || "").toLowerCase().match(/[a-z0-9฀-๿]{2,}/g);
+            return new Set(m || []);
+        };
+        // ความคล้ายของข้อความ 2 ชุดแบบ Dice coefficient (0-1) — 0 ถ้าฝั่งใดฝั่งหนึ่งไม่มีตัวหนังสือเลย
+        const ocrTextSim = (tokensA, tokensB) => {
+            if (!tokensA.size || !tokensB.size) return 0;
+            let inter = 0;
+            tokensA.forEach(t => { if (tokensB.has(t)) inter++; });
+            return (2 * inter) / (tokensA.size + tokensB.size);
+        };
+        // อ่านตัวหนังสือในรูปผ่าน backend (Google Drive OCR) — คืน "" ถ้าอ่านไม่ได้/ล้มเหลว ไม่โยน error กัน flow หลักพัง
+        const ocrImageB64 = async (apiUrl, base64, mimeType = "image/jpeg") => {
+            if (!apiUrl || !base64) return "";
+            try {
+                const res = await fetch(apiUrl, {
+                    method: "POST",
+                    headers: { "Content-Type": "text/plain;charset=utf-8" },
+                    body: JSON.stringify({ action: "ocr_image", imageData: base64, mimeType })
+                });
+                const json = await res.json();
+                return json.status === "success" ? String(json.text || "").trim() : "";
+            } catch (e) { console.log("ocr failed", e); return ""; }
+        };
+
         const DEFAULT_API_URL ="https://script.google.com/macros/s/AKfycby923XbLtP0TxMmKNG1JyhmtZeMNNALNCCJLXWr1GI70NYH0h7AI27c7yP2-L3h9Ne_zQ/exec"; 
         
         const INITIAL_INVENTORY = [
@@ -607,6 +634,7 @@
         const NEG_EXAMPLE_PENALTY_WEIGHT = 0.4; // ทุก ๆ 1 หน่วยความคล้ายกับ "ตัวอย่างลบ" จะหักคะแนนพาร์ทนั้น 0.4 หน่วย
         const NEG_EXAMPLE_MAX_PENALTY = 0.25;   // เพดานหักคะแนนสูงสุด — กันไม่ให้ตัวอย่างลบตัวเดียว (เช่นกดพลาด) ลบคะแนนบวกที่สูงจริง ๆ จนหลุดผลค้นหาไปเลย
         const REJECT_DISABLED_ABOVE_SCORE = 0.6; // ความเหมือนสูงกว่านี้ถือว่าน่าจะถูกจริง ๆ ปิดปุ่ม "ไม่ใช่" กันกดพลาดไปสร้างตัวอย่างลบผิด ๆ
+        const OCR_TEXT_MATCH_WEIGHT = 0.3;       // โบนัสคะแนนสูงสุดจากตัวหนังสือ/label ที่ตรงกัน (ตัวหนังสือตรงเป๊ะ = +0.3)
 
         const useVisualSearch = (apiUrl, partImages = {}, partNameMap = {}) => {
             const [embeddings, setEmbeddings] = useState({});
@@ -631,7 +659,7 @@
                     const out = {};
                     Object.keys(json.embeddings || {}).forEach(p => {
                         const list = (json.embeddings[p] || [])
-                            .map(it => { const v = b64ToEmb(it.embedding); return v ? { fileId: it.fileId, vector: v } : null; })
+                            .map(it => { const v = b64ToEmb(it.embedding); return v ? { fileId: it.fileId, vector: v, tokens: ocrTokens(it.ocrText), hasOcr: !!it.ocrText } : null; })
                             .filter(Boolean);
                         if (list.length) out[p] = list;
                     });
@@ -650,13 +678,17 @@
             useEffect(() => { if (!embLoaded) loadEmbeddings(); }, [embLoaded, loadEmbeddings]);
 
             // สร้าง/อัปเดตดัชนี: ดึงรูปที่ยังไม่มี embedding จาก Drive (ผ่าน proxy) มาแปลงเป็นเวกเตอร์แล้วบันทึก — ทำทีละรูป ไม่ใช่ทีละพาร์ท
+            // รวมถึงรูปที่ทำดัชนีไว้ตั้งแต่ก่อนมีระบบอ่านตัวหนังสือ (มี embedding แต่ยังไม่มี OCR text) ให้ประมวลผลใหม่ด้วย
             const buildIndex = async () => {
                 if (!apiUrl) return alert("ยังไม่ได้ตั้งค่า API URL");
                 const targets = [];
                 Object.keys(partImages).forEach(p => {
-                    const already = new Set((embeddings[p] || []).map(it => it.fileId));
+                    const indexed = {};
+                    (embeddings[p] || []).forEach(it => { indexed[it.fileId] = it; });
                     (partImages[p] || []).forEach(img => {
-                        if (img.fileId && !already.has(img.fileId)) targets.push({ partNo: p, fileId: img.fileId });
+                        if (!img.fileId) return;
+                        const existing = indexed[img.fileId];
+                        if (!existing || !existing.hasOcr) targets.push({ partNo: p, fileId: img.fileId });
                     });
                 });
                 if (targets.length === 0) return alert("ดัชนีรูปครบแล้ว — ไม่มีรูปใหม่ให้ประมวลผล");
@@ -674,8 +706,10 @@
                             if (json.status !== "success" || !json.base64) continue;
                             const img = await dataUrlToImageEl("data:" + (json.mimeType || "image/jpeg") + ";base64," + json.base64);
                             const vec = await embedImageEl(model, img);
-                            newEmb[p] = [...(newEmb[p] || []).filter(it => it.fileId !== fileId), { fileId, vector: vec }];
-                            toSave.push({ partNo: p, fileId, embedding: embToB64(vec) });
+                            // อ่านตัวหนังสือ/label บนพาร์ทเก็บไว้เทียบด้วย — "·" = อ่านแล้วแต่ไม่มีตัวหนังสือ (กันไม่ให้ถูกจับมาประมวลผลซ้ำทุกครั้ง)
+                            const ocrText = (await ocrImageB64(apiUrl, json.base64, json.mimeType || "image/jpeg")) || "·";
+                            newEmb[p] = [...(newEmb[p] || []).filter(it => it.fileId !== fileId), { fileId, vector: vec, tokens: ocrTokens(ocrText), hasOcr: true }];
+                            toSave.push({ partNo: p, fileId, embedding: embToB64(vec), ocrText });
                         } catch (err) { console.log("index fail", p, fileId, err); }
                     }
                     setIndexProg({ done: targets.length, total: targets.length });
@@ -702,12 +736,17 @@
                     const img = await fileToImageEl(file);
                     const q = await embedImageEl(model, img);
                     setQueryEmbedding(q);
+                    setVisualMsg("กำลังอ่านตัวหนังสือในรูป...");
+                    const queryTokens = ocrTokens(await ocrImageB64(apiUrl, dataUrl.split(',')[1])); // อ่าน label/ตัวหนังสือในรูปที่ถ่าย ไว้เทียบกับที่เคย OCR เก็บไว้ตอนทำดัชนี
                     const scored = Object.keys(embeddings).map(p => {
                         const posScore = Math.max(...embeddings[p].map(it => cosineSim(q, it.vector)));
                         const negSim = negatives[p] ? Math.max(0, ...negatives[p].map(v => cosineSim(q, v))) : 0;
                         // จำกัดเพดานการหักคะแนน กันไม่ให้ตัวอย่างลบเพียงอันเดียว (เช่นกดพลาด) ลบล้างคะแนนบวกที่สูงจริง ๆ ทิ้งไปทั้งหมด
                         const penalty = Math.min(negSim * NEG_EXAMPLE_PENALTY_WEIGHT, NEG_EXAMPLE_MAX_PENALTY);
-                        return { partNo: p, name: partNameMap[p] || "", score: posScore - penalty };
+                        // โบนัสจากตัวหนังสือ/label ตรงกัน — ช่วยแยกพาร์ทที่หน้าตาเหมือนกันแต่พิมพ์เบอร์/ยี่ห้อต่างกัน
+                        const textSim = Math.max(0, ...embeddings[p].map(it => ocrTextSim(queryTokens, it.tokens || new Set())));
+                        const score = Math.min(1, posScore - penalty + textSim * OCR_TEXT_MATCH_WEIGHT);
+                        return { partNo: p, name: partNameMap[p] || "", score, textSim };
                     });
                     scored.sort((a, b) => b.score - a.score);
                     const filtered = scored.filter(r => r.score >= 0.5); // ตัดผลที่ความเหมือนต่ำกว่า 50% ทิ้ง (หลังหักคะแนนตัวอย่างลบแล้ว)
@@ -818,10 +857,12 @@
                     const model = await loadVisionModel();
                     const img = await dataUrlToImageEl(dataUrl);
                     const vec = await embedImageEl(model, img);
+                    // อ่านตัวหนังสือ/label บนพาร์ทเก็บไว้เทียบด้วย — "·" = อ่านแล้วแต่ไม่มีตัวหนังสือ (กันไม่ให้ถูกจับมาประมวลผลซ้ำ)
+                    const ocrText = (await ocrImageB64(apiUrl, dataUrl.split(',')[1])) || "·";
                     await fetch(apiUrl, {
                         method: "POST",
                         headers: { "Content-Type": "text/plain;charset=utf-8" },
-                        body: JSON.stringify({ action: "save_embeddings", items: [{ partNo, fileId, embedding: embToB64(vec) }] })
+                        body: JSON.stringify({ action: "save_embeddings", items: [{ partNo, fileId, embedding: embToB64(vec), ocrText }] })
                     });
                 } catch (err) {
                     console.log("auto-index (background) failed", partNo, fileId, err);
@@ -1794,7 +1835,7 @@
                         <input type="file" ref={imgSearchRef} onChange={(e) => { setFeedbackFor({}); handleQueryImage(e); }} className="hidden" accept="image/*" capture="environment" />
                         <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4 text-xs text-indigo-800 flex items-start gap-2">
                             <i className="fa-solid fa-circle-info mt-0.5"></i>
-                            <span>ถ่ายรูปพาร์ทเพื่อค้นหาจากความเหมือนของรูป — รูปที่อัปใหม่จะถูกสร้างดัชนีให้อัตโนมัติ ส่วนรูปเก่าที่ยังไม่มีดัชนี กดปุ่ม "สร้าง/อัปเดตดัชนีรูป" เพื่อประมวลผลย้อนหลัง (ประมวลผลด้วย AI ในเครื่องคุณเอง ไม่ส่งรูปออกไปไหน) — เจอผลลัพธ์ที่ใช่แล้วกด "ใช่" เพื่อฝึกระบบให้แม่นขึ้น หรือกด "ไม่ใช่" ถ้าผลลัพธ์ผิด เพื่อกันไม่ให้พาร์ทนั้นขึ้นมาสับสนซ้ำอีก (กดผิดใบ กด "เลิกทำ" ได้ทันที) — ผลลัพธ์ที่ความเหมือนเกิน {Math.round(REJECT_DISABLED_ABOVE_SCORE * 100)}% จะกด "ไม่ใช่" ไม่ได้ เพราะน่าจะถูกจริง ๆ อยู่แล้ว กันกดพลาด</span>
+                            <span>ถ่ายรูปพาร์ทเพื่อค้นหาจากทั้งความเหมือนของรูปและตัวหนังสือ/label บนพาร์ท (OCR) — รูปที่อัปใหม่จะถูกสร้างดัชนีให้อัตโนมัติ ส่วนรูปเก่าที่ยังไม่มีดัชนีหรือยังไม่เคยอ่านตัวหนังสือ กดปุ่ม "สร้าง/อัปเดตดัชนีรูป" เพื่อประมวลผลย้อนหลัง — เจอผลลัพธ์ที่ใช่แล้วกด "ใช่" เพื่อฝึกระบบให้แม่นขึ้น หรือกด "ไม่ใช่" ถ้าผลลัพธ์ผิด เพื่อกันไม่ให้พาร์ทนั้นขึ้นมาสับสนซ้ำอีก (กดผิดใบ กด "เลิกทำ" ได้ทันที) — ผลลัพธ์ที่ความเหมือนเกิน {Math.round(REJECT_DISABLED_ABOVE_SCORE * 100)}% จะกด "ไม่ใช่" ไม่ได้ เพราะน่าจะถูกจริง ๆ อยู่แล้ว กันกดพลาด</span>
                         </div>
                         <div className="flex flex-wrap gap-2 items-center">
                             <button onClick={()=>imgSearchRef.current && imgSearchRef.current.click()} disabled={visualBusy} className="bg-indigo-600 text-white px-5 py-3 rounded-xl font-bold flex items-center gap-2 disabled:opacity-50 hover:bg-indigo-700">
@@ -1867,7 +1908,10 @@
                                                     <div className="font-mono font-bold text-blue-600 text-xs truncate">{r.partNo}</div>
                                                     <div className="text-[11px] text-slate-500 truncate" title={r.name}>{r.name}</div>
                                                     <div className="mt-1 h-1.5 bg-slate-100 rounded overflow-hidden"><div className="h-full bg-indigo-500" style={{width: Math.max(2,Math.round(r.score*100))+'%'}}></div></div>
-                                                    <div className="text-[10px] text-slate-400 text-right">{Math.round(r.score*100)}%</div>
+                                                    <div className="text-[10px] text-slate-400 text-right flex items-center justify-between">
+                                                        <span>{r.textSim > 0.2 ? <span className="text-amber-600 font-bold"><i className="fa-solid fa-tag mr-0.5"></i>ตัวหนังสือตรง</span> : null}</span>
+                                                        <span>{Math.round(r.score*100)}%</span>
+                                                    </div>
                                                     {feedbackFor[r.partNo] ? (
                                                         <div className="mt-2 flex items-center justify-between gap-1">
                                                             <span className={`text-[10px] font-bold ${feedbackFor[r.partNo].type === 'yes' ? 'text-emerald-600' : 'text-slate-400'}`}>

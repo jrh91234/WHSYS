@@ -101,7 +101,8 @@ function doGet(e) {
     }
 
     // ดึงเวกเตอร์รูป (embedding) ของทุกพาร์ท สำหรับค้นหาด้วยรูป — โหลดเฉพาะตอนใช้งานโหมด Visual Search
-    // คืนเป็น partNo -> [{ fileId, embedding }, ...] เพราะพาร์ทเดียวกันมีได้หลายรูป/หลายมุม
+    // คืนเป็น partNo -> [{ fileId, embedding, ocrText }, ...] เพราะพาร์ทเดียวกันมีได้หลายรูป/หลายมุม
+    // ocrText (คอลัมน์ G) = ตัวหนังสือ/label ที่ OCR อ่านได้จากรูป ใช้เทียบกับตัวหนังสือในรูปที่ค้นหา
     if (action == "getEmbeddings") {
       var embSheet = ss.getSheetByName("PartImages");
       var embeddings = {};
@@ -113,7 +114,7 @@ function doGet(e) {
           var evec = edata[ei][5]; // column F = Embedding
           if (epNo && efid && evec) {
             if (!embeddings[epNo]) embeddings[epNo] = [];
-            embeddings[epNo].push({ fileId: efid, embedding: String(evec) });
+            embeddings[epNo].push({ fileId: efid, embedding: String(evec), ocrText: String(edata[ei][6] || "") });
           }
         }
       }
@@ -390,7 +391,7 @@ function doPost(e) {
       var imgSheet = ss.getSheetByName("PartImages");
       if (!imgSheet) {
         imgSheet = ss.insertSheet("PartImages");
-        imgSheet.appendRow(["PartNo", "FileId", "Url", "UpdatedAt", "User", "Embedding"]);
+        imgSheet.appendRow(["PartNo", "FileId", "Url", "UpdatedAt", "User", "Embedding", "OcrText"]);
       }
 
       var now = new Date().toISOString();
@@ -433,14 +434,14 @@ function doPost(e) {
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
-    // 3.11 บันทึกเวกเตอร์รูป (embedding) ของหลายรูปพร้อมกัน ลงคอลัมน์ F ของ PartImages
+    // 3.11 บันทึกเวกเตอร์รูป (embedding) และตัวหนังสือที่ OCR อ่านได้ ของหลายรูปพร้อมกัน ลงคอลัมน์ F/G ของ PartImages
     // จับคู่ด้วย fileId (ไม่ใช่ partNo) เพราะพาร์ทเดียวกันมีได้หลายแถว/หลายรูป
     else if (body.action === "save_embeddings") {
-      var embItems = body.items || []; // [{ partNo, fileId, embedding }]
+      var embItems = body.items || []; // [{ partNo, fileId, embedding, ocrText? }]
       var embSh = ss.getSheetByName("PartImages");
       if (!embSh) {
         embSh = ss.insertSheet("PartImages");
-        embSh.appendRow(["PartNo", "FileId", "Url", "UpdatedAt", "User", "Embedding"]);
+        embSh.appendRow(["PartNo", "FileId", "Url", "UpdatedAt", "User", "Embedding", "OcrText"]);
       }
       var embAll = embSh.getDataRange().getValues();
       var rowOfFileId = {};
@@ -451,7 +452,11 @@ function doPost(e) {
       var savedCount = 0;
       embItems.forEach(function (it) {
         var rr = rowOfFileId[String(it.fileId || "").trim()];
-        if (rr) { embSh.getRange(rr, 6).setValue(String(it.embedding || "")); savedCount++; }
+        if (rr) {
+          embSh.getRange(rr, 6).setValue(String(it.embedding || ""));
+          if (it.ocrText !== undefined) embSh.getRange(rr, 7).setValue(String(it.ocrText || ""));
+          savedCount++;
+        }
       });
       return ContentService.createTextOutput(JSON.stringify({ status: "success", count: savedCount })).setMimeType(ContentService.MimeType.JSON);
     }
