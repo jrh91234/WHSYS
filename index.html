@@ -2084,11 +2084,15 @@
             const [vals, setVals] = useState(() => ({ ...VS_TUNE }));
             const setVal = (k, v) => setVals(prev => ({ ...prev, [k]: v }));
             const save = () => {
-                // แปลงเป็นตัวเลขก่อนเก็บ — ช่องที่พิมพ์เพี้ยน (ว่าง/ไม่ใช่ตัวเลข) ถอยกลับไปใช้ค่าเริ่มต้นของช่องนั้น
+                // ทำความสะอาดค่าก่อนเก็บ: ช่องที่พิมพ์เพี้ยน (ว่าง/ไม่ใช่ตัวเลข) ถอยกลับค่าเริ่มต้นของช่องนั้น,
+                // ค่าติดลบถูกดันเป็น 0 (น้ำหนักติดลบจะกลับทิศคะแนน เช่น หักคะแนนกลายเป็นโบนัส),
+                // ช่องที่ค่าเริ่มต้นเป็นจำนวนเต็ม (จำนวนจุด/จำนวนพาร์ท/ความคมขอบ) ปัดเศษให้เป็นจำนวนเต็ม
                 const clean = {};
                 Object.keys(VS_TUNE_DEFAULTS).forEach(k => {
                     const n = parseFloat(vals[k]);
-                    clean[k] = isNaN(n) ? VS_TUNE_DEFAULTS[k] : n;
+                    if (isNaN(n)) { clean[k] = VS_TUNE_DEFAULTS[k]; return; }
+                    const nonNeg = Math.max(0, n);
+                    clean[k] = Number.isInteger(VS_TUNE_DEFAULTS[k]) ? Math.round(nonNeg) : nonNeg;
                 });
                 saveVsTune(clean);
                 onClose();
@@ -2111,7 +2115,7 @@
                                                 <div className="text-xs font-bold text-slate-700">{f.label}</div>
                                                 <div className="text-[10px] text-slate-400">{f.hint} · ค่าเริ่มต้น {VS_TUNE_DEFAULTS[f.key]}</div>
                                             </div>
-                                            <input type="number" step={f.step} value={vals[f.key]}
+                                            <input type="number" step={f.step} min={0} value={vals[f.key]}
                                                 onChange={e => setVal(f.key, e.target.value)}
                                                 className="w-24 shrink-0 border rounded-lg px-2 py-1.5 text-sm text-right font-mono" />
                                         </div>
