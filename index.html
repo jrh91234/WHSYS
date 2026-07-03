@@ -104,6 +104,7 @@
 
         // ===== ค้นหาด้วยรูป (Visual Search) — TensorFlow.js + MobileNet (โหลดตอนใช้งานเท่านั้น) =====
         let __visionModel = null;
+        let __visionModelReady = null; // ตัวโมเดลที่พร้อมใช้ล่าสุด (ค่าจริง ไม่ใช่ promise) — ใช้แทนตัวเก่าที่ตายไปหลังกู้ GPU
         const loadVisionModel = () => {
             if (__visionModel) return __visionModel;
             const loadScript = (src) => new Promise((res, rej) => {
@@ -116,9 +117,26 @@
             __visionModel = (async () => {
                 if (!window.tf) await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js');
                 if (!window.mobilenet) await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow-models/mobilenet@2.1.1/dist/mobilenet.min.js');
-                return await window.mobilenet.load({ version: 2, alpha: 1.0 });
+                const m = await window.mobilenet.load({ version: 2, alpha: 1.0 });
+                __visionModelReady = m;
+                return m;
             })().catch((e) => { __visionModel = null; throw e; });
             return __visionModel;
+        };
+        // GPU บางเครื่อง (โดยเฉพาะมือถือ) พังกลางคันเมื่อหน่วยความจำตึง: "Failed to link vertex and fragment shaders" /
+        // "WebGL context lost" — พอพังแล้วจะพังทุกครั้งจนกว่าจะรีเฟรชหน้า ทางกู้คือสลับไปประมวลผลด้วย CPU (ช้าลงแต่ไม่ล้ม)
+        // แล้วโหลดโมเดลใหม่ เพราะ weight ชุดเก่าค้างอยู่ในหน่วยความจำ GPU ที่ตายไปแล้ว
+        const isGpuGlitch = (e) => /shader|webgl|context|framebuffer|texture/i.test(String((e && e.message) || e));
+        let __gpuRecovering = null; // กันหลาย embed ที่พังพร้อมกันแย่งกันกู้ซ้ำซ้อน — กู้รอบเดียวแล้วใช้ร่วมกัน
+        const recoverVisionModel = () => {
+            if (__gpuRecovering) return __gpuRecovering;
+            __gpuRecovering = (async () => {
+                console.log("GPU glitch — switching TF.js to CPU backend");
+                try { await window.tf.setBackend('cpu'); await window.tf.ready(); } catch (e) { console.log("setBackend cpu failed", e); }
+                __visionModel = null; __visionModelReady = null;
+                return await loadVisionModel(); // โหลดโมเดลใหม่บน backend ใหม่ (ไฟล์ติด cache เบราว์เซอร์อยู่แล้ว ไม่ช้า)
+            })().finally(() => { __gpuRecovering = null; });
+            return __gpuRecovering;
         };
         const l2normalize = (v) => {
             let s = 0; for (let i = 0; i < v.length; i++) s += v[i] * v[i];
@@ -127,11 +145,21 @@
             for (let i = 0; i < v.length; i++) o[i] = v[i] / s;
             return o;
         };
-        const embedImageEl = async (model, imgEl) => {
+        const embedOnce = async (model, imgEl) => {
             const t = model.infer(imgEl, true); // embedding vector
             const data = await t.data();
             if (t.dispose) t.dispose();
             return l2normalize(Float32Array.from(data));
+        };
+        const embedImageEl = async (model, imgEl) => {
+            // ใช้โมเดลตัวล่าสุดเสมอ — ตัวที่ผู้เรียกถืออยู่อาจเป็นตัวเก่าที่ตายไปแล้วหลังการกู้ GPU รอบก่อน
+            try {
+                return await embedOnce(__visionModelReady || model, imgEl);
+            } catch (e) {
+                if (!isGpuGlitch(e)) throw e;
+                const fresh = await recoverVisionModel(); // GPU พัง → สลับ CPU + โหลดโมเดลใหม่ แล้วลองซ้ำอีกครั้งเดียว
+                return await embedOnce(fresh, imgEl);
+            }
         };
         // เก็บเวกเตอร์แบบ int8 (quantize) → base64 เพื่อประหยัดพื้นที่ในชีต
         const embToB64 = (vec) => {
