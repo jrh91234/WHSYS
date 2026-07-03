@@ -103,22 +103,36 @@ function doGet(e) {
     // ดึงเวกเตอร์รูป (embedding) ของทุกพาร์ท สำหรับค้นหาด้วยรูป — โหลดเฉพาะตอนใช้งานโหมด Visual Search
     // คืนเป็น partNo -> [{ fileId, embedding, ocrText }, ...] เพราะพาร์ทเดียวกันมีได้หลายรูป/หลายมุม
     // ocrText (คอลัมน์ G) = ตัวหนังสือ/label ที่ OCR อ่านได้จากรูป ใช้เทียบกับตัวหนังสือในรูปที่ค้นหา
+    // รองรับแบ่งก้อน (offset/limit นับเป็นแถวข้อมูล) — ดัชนีรุ่นใหม่ก้อนใหญ่มาก (~10KB/รูป) ตอบทีเดียวทั้งหมดช้า/ล้มบนมือถือ
+    // ไม่ส่ง limit มา = ตอบทั้งหมดเหมือนเดิม (เข้ากันได้กับ frontend รุ่นเก่า) — อ่านเฉพาะช่วงแถวที่ขอ ไม่อ่านทั้งชีตทุกครั้ง
     if (action == "getEmbeddings") {
       var embSheet = ss.getSheetByName("PartImages");
       var embeddings = {};
+      var embTotal = 0;
+      var embOffset = parseInt(e.parameter.offset, 10); if (isNaN(embOffset) || embOffset < 0) embOffset = 0;
+      var embLimit = parseInt(e.parameter.limit, 10); if (isNaN(embLimit) || embLimit <= 0) embLimit = 0; // 0 = ทั้งหมด
       if (embSheet && embSheet.getLastRow() > 1 && embSheet.getLastColumn() >= 6) {
-        var edata = embSheet.getDataRange().getValues();
-        for (var ei = 1; ei < edata.length; ei++) {
-          var epNo = String(edata[ei][0]).trim();
-          var efid = String(edata[ei][1] || "");
-          var evec = edata[ei][5]; // column F = Embedding
-          if (epNo && efid && evec) {
-            if (!embeddings[epNo]) embeddings[epNo] = [];
-            embeddings[epNo].push({ fileId: efid, embedding: String(evec), ocrText: String(edata[ei][6] || "") });
+        embTotal = embSheet.getLastRow() - 1; // ไม่นับหัวตาราง
+        var embRows = embLimit > 0 ? Math.min(embLimit, embTotal - embOffset) : (embTotal - embOffset);
+        if (embRows > 0) {
+          var edata = embSheet.getRange(2 + embOffset, 1, embRows, 7).getValues();
+          for (var ei = 0; ei < edata.length; ei++) {
+            var epNo = String(edata[ei][0]).trim();
+            var efid = String(edata[ei][1] || "");
+            var evec = edata[ei][5]; // column F = Embedding
+            if (epNo && efid && evec) {
+              if (!embeddings[epNo]) embeddings[epNo] = [];
+              embeddings[epNo].push({ fileId: efid, embedding: String(evec), ocrText: String(edata[ei][6] || "") });
+            }
           }
         }
       }
-      return ContentService.createTextOutput(JSON.stringify({ embeddings: embeddings })).setMimeType(ContentService.MimeType.JSON);
+      return ContentService.createTextOutput(JSON.stringify({
+        embeddings: embeddings,
+        total: embTotal,
+        offset: embOffset,
+        count: Math.max(0, embLimit > 0 ? Math.min(embLimit, embTotal - embOffset) : (embTotal - embOffset))
+      })).setMimeType(ContentService.MimeType.JSON);
     }
 
     // ดึง "ตัวอย่างลบ" ของค้นหาด้วยรูป — เวกเตอร์ของรูปที่ user กดยืนยันว่า "ไม่ใช่พาร์ทนี้"

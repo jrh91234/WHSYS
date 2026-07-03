@@ -894,74 +894,115 @@
             const [visualNotice, setVisualNotice] = useState(""); // ข้อความเตือนประกอบผลค้นหา เช่น "คะแนนสูสี ตรวจรายละเอียดแล้ว โปรดเช็คจำนวนรูก่อนยืนยัน"
             const patchCacheRef = useRef({}); // fileId -> patch vectors ที่คำนวณแล้ว — ค้นซ้ำรูปเดิมไม่ต้องดึง/embed ใหม่ (อยู่แค่ในหน่วยความจำต่อ session)
 
-            const [freshLoaded, setFreshLoaded] = useState(false); // ดัชนี "ของสด" จาก cloud มาถึงแล้ว — งานซ่อมดัชนีรอธงนี้ กันตัดสินจากแคชเก่า
+            const [freshLoaded, setFreshLoaded] = useState(false); // ดัชนี "ของสด" จาก cloud มาถึงครบแล้ว — งานซ่อมดัชนีรอธงนี้ กันตัดสินจากแคชเก่า
+            const [embLoadProg, setEmbLoadProg] = useState({ done: 0, total: 0 }); // ความคืบหน้าโหลดดัชนีจาก cloud (นับเป็นแถวรูป)
+            const [embLoadError, setEmbLoadError] = useState(""); // โหลดดัชนีพลาด — โชว์ให้เห็น + มีปุ่มลองใหม่ (เดิมกลืนเงียบลง console ผู้ใช้ไม่รู้ว่าค้างอยู่ตรงไหน)
+            const embLoadingRef = useRef(false); // กันโหลดซ้อนกัน (เช่น กดลองใหม่รัว ๆ)
+
+            // แปลงข้อมูลดัชนีดิบ 1 ก้อนจาก cloud แล้วรวมเข้าสถานะแบบระวัง: ตัวที่ข้อมูลครบกว่า (เช่น เพิ่งอัปเกรด/ประมวลผลในเครื่อง) ชนะ —
+            // กัน race ที่ของสด (ดึงมาก่อน) เขียนทับดัชนีที่เพิ่งประมวลผลเสร็จระหว่างรอโหลด
+            const vsCompleteness = (it) => (it.hasOcr ? 1 : 0) + (it.centerVec ? 1 : 0) + (it.colorHist ? 1 : 0) + (it.patches ? 1 : 0);
+            const mergeEmbChunk = (raw) => {
+                const chunk = {};
+                Object.keys(raw || {}).forEach(p => {
+                    const list = (raw[p] || [])
+                        .map(it => {
+                            const u = unpackEmbedding(it.embedding);
+                            if (!u.vector) return null;
+                            return { fileId: it.fileId, vector: u.vector, centerVec: u.centerVec, colorHist: u.colorHist, patches: u.patches, tokens: ocrTokens(it.ocrText), hasOcr: !!it.ocrText, ocrText: String(it.ocrText || "") };
+                        })
+                        .filter(Boolean);
+                    if (list.length) chunk[p] = list;
+                });
+                if (!Object.keys(chunk).length) return;
+                setEmbeddings(prev => {
+                    const merged = { ...prev };
+                    Object.keys(chunk).forEach(p => {
+                        const byId = {};
+                        (merged[p] || []).forEach(it => { byId[it.fileId] = it; });
+                        chunk[p].forEach(it => {
+                            const c = byId[it.fileId];
+                            if (!c || vsCompleteness(it) >= vsCompleteness(c)) byId[it.fileId] = it; // ครบเท่ากัน = ของสดจาก cloud ชนะ
+                        });
+                        merged[p] = Object.values(byId);
+                    });
+                    return merged;
+                });
+            };
+
             const loadEmbeddings = React.useCallback(async () => {
                 if (!apiUrl) { setEmbLoaded(true); return; }
-                // ขั้นที่ 1: ใช้แคชในเครื่องก่อน — หน้าพร้อมค้นหาแทบทันที ไม่ต้องรอโหลดก้อนใหญ่จาก cloud (ช้ามากบนมือถือ)
-                const cached = await vsCacheGet();
-                if (cached && cached.embeddings) {
-                    setEmbeddings(cached.embeddings);
-                    setNegatives(cached.negatives || {});
-                    setEmbLoaded(true);
-                }
-                // ขั้นที่ 2: ดึงของสดจาก cloud เบื้องหลัง แค่ครั้งเดียวต่อการเปิดเว็บ — สลับหน้าไปมาไม่โหลดซ้ำ
-                if (__vsRevalidated) { setEmbLoaded(true); setFreshLoaded(true); return; }
+                if (embLoadingRef.current) return;
+                embLoadingRef.current = true;
                 try {
-                    const [embRes, negRes] = await Promise.all([
-                        fetch(apiUrl + "?action=getEmbeddings&t=" + Date.now()),
-                        fetch(apiUrl + "?action=getNegativeExamples&t=" + Date.now())
-                    ]);
-                    const json = await embRes.json();
-                    const out = {};
-                    Object.keys(json.embeddings || {}).forEach(p => {
-                        const list = (json.embeddings[p] || [])
-                            .map(it => {
-                                const u = unpackEmbedding(it.embedding);
-                                if (!u.vector) return null;
-                                return { fileId: it.fileId, vector: u.vector, centerVec: u.centerVec, colorHist: u.colorHist, patches: u.patches, tokens: ocrTokens(it.ocrText), hasOcr: !!it.ocrText, ocrText: String(it.ocrText || "") };
-                            })
-                            .filter(Boolean);
-                        if (list.length) out[p] = list;
-                    });
-
-                    const negJson = await negRes.json();
-                    const negOut = {};
-                    Object.keys(negJson.negatives || {}).forEach(p => {
-                        const list = (negJson.negatives[p] || []).map(b64ToEmb).filter(Boolean);
-                        if (list.length) negOut[p] = list;
-                    });
-
-                    __vsRevalidated = true;
-                    // รวมของสดกับสถานะในเครื่องแทนการเขียนทับตรง ๆ — ระหว่างรอโหลด (หลายวินาที) ผู้ใช้อาจกด "ไม่ใช่"
-                    // หรือมีดัชนีที่เพิ่งประมวลผลเสร็จ ซึ่งของสด (ดึงมาก่อนหน้านั้น) ยังไม่รู้จัก เขียนทับจะทำของใหม่หายไป
-                    const completeness = (it) => (it.hasOcr ? 1 : 0) + (it.centerVec ? 1 : 0) + (it.colorHist ? 1 : 0) + (it.patches ? 1 : 0);
-                    setEmbeddings(prev => {
-                        const merged = { ...out };
-                        Object.keys(prev).forEach(p => {
-                            const byId = {};
-                            (merged[p] || []).forEach(it => { byId[it.fileId] = it; });
-                            (prev[p] || []).forEach(it => {
-                                const c = byId[it.fileId];
-                                if (!c || completeness(it) > completeness(c)) byId[it.fileId] = it; // ตัวที่ข้อมูลครบกว่า (เพิ่งอัปเกรด) ชนะ
+                    // ขั้นที่ 1: ใช้แคชในเครื่องก่อน — หน้าพร้อมค้นหาแทบทันที ไม่ต้องรอโหลดก้อนใหญ่จาก cloud (ช้ามากบนมือถือ)
+                    const cached = await vsCacheGet();
+                    if (cached && cached.embeddings) {
+                        setEmbeddings(cached.embeddings);
+                        setNegatives(cached.negatives || {});
+                        setEmbLoaded(true);
+                    }
+                    // ขั้นที่ 2: ดึงของสดจาก cloud เบื้องหลัง แค่ครั้งเดียวต่อการเปิดเว็บ — สลับหน้าไปมาไม่โหลดซ้ำ
+                    if (__vsRevalidated) { setEmbLoaded(true); setFreshLoaded(true); return; }
+                    setEmbLoadError("");
+                    try {
+                        const negPromise = fetch(apiUrl + "?action=getNegativeExamples&t=" + Date.now()).then(r => {
+                            if (!r.ok) throw new Error("HTTP " + r.status); // ให้ข้อความ error บนจออ่านรู้เรื่อง (ไม่ใช่ JSON parse error ปริศนา)
+                            return r.json();
+                        });
+                        // โหลดดัชนีทีละก้อนเล็ก ๆ — ก้อนเดียวทั้งคลัง (~10KB/รูป × หลายร้อยรูป) ช้า/ล้มบนมือถือ
+                        // แต่ละก้อนที่มาถึงถูกใส่เข้าดัชนีทันที ค้นหาได้เลยไม่ต้องรอครบ + ตัวเลขความคืบหน้าเดินให้เห็น
+                        const CHUNK_ROWS = 60;
+                        let offset = 0;
+                        while (true) {
+                            const res = await fetch(apiUrl + "?action=getEmbeddings&offset=" + offset + "&limit=" + CHUNK_ROWS + "&t=" + Date.now());
+                            if (!res.ok) throw new Error("HTTP " + res.status);
+                            const json = await res.json();
+                            mergeEmbChunk(json.embeddings);
+                            setEmbLoaded(true); // มีดัชนีบางส่วนแล้ว — ปลดล็อกการค้นหาได้เลย
+                            if (typeof json.total !== 'number') break; // backend รุ่นเก่า (ยังไม่ deploy ตัวรองรับแบ่งก้อน): ตอบทั้งหมดมาแล้วในครั้งเดียว
+                            const got = typeof json.count === 'number' ? json.count : CHUNK_ROWS;
+                            if (got <= 0) break;
+                            offset += got;
+                            setEmbLoadProg({ done: Math.min(offset, json.total), total: json.total });
+                            if (offset >= json.total) break;
+                        }
+                        const negJson = await negPromise;
+                        const negOut = {};
+                        Object.keys(negJson.negatives || {}).forEach(p => {
+                            const list = (negJson.negatives[p] || []).map(b64ToEmb).filter(Boolean);
+                            if (list.length) negOut[p] = list;
+                        });
+                        setNegatives(prev => {
+                            const merged = { ...negOut };
+                            Object.keys(prev).forEach(p => {
+                                const seen = new Set((merged[p] || []).map(embToB64));
+                                const extra = (prev[p] || []).filter(v => !seen.has(embToB64(v))); // ตัวอย่างลบที่กดระหว่างรอโหลด
+                                if (extra.length) merged[p] = [...(merged[p] || []), ...extra];
                             });
-                            merged[p] = Object.values(byId);
+                            return merged;
                         });
-                        return merged;
-                    });
-                    setNegatives(prev => {
-                        const merged = { ...negOut };
-                        Object.keys(prev).forEach(p => {
-                            const seen = new Set((merged[p] || []).map(embToB64));
-                            const extra = (prev[p] || []).filter(v => !seen.has(embToB64(v))); // ตัวอย่างลบที่กดระหว่างรอโหลด
-                            if (extra.length) merged[p] = [...(merged[p] || []), ...extra];
-                        });
-                        return merged;
-                    });
-                    setFreshLoaded(true);
-                } catch (e) { console.log("load embeddings failed", e); } // โหลดของสดพลาด = ใช้แคชต่อไป ค้นหายังทำงานได้
-                finally { setEmbLoaded(true); }
+                        __vsRevalidated = true;
+                        setFreshLoaded(true);
+                    } catch (e) {
+                        // โหลดของสดพลาด = ใช้แคชต่อไป ค้นหายังทำงานได้ — แต่ต้องบอกผู้ใช้ ไม่กลืนเงียบ
+                        console.log("load embeddings failed", e);
+                        setEmbLoadError(String((e && e.message) || e));
+                    }
+                } finally {
+                    embLoadingRef.current = false;
+                    setEmbLoaded(true);
+                    setEmbLoadProg({ done: 0, total: 0 });
+                }
             }, [apiUrl]);
             useEffect(() => { if (!embLoaded) loadEmbeddings(); }, [embLoaded, loadEmbeddings]);
+
+            // กดลองโหลดดัชนีจาก cloud ใหม่ (หลังพลาด เช่น เน็ตหลุด) — ปลดธง revalidate แล้วให้ effect เดิมยิง loadEmbeddings อีกรอบ
+            const retryLoadIndex = () => {
+                __vsRevalidated = false;
+                setEmbLoadError("");
+                setEmbLoaded(false);
+            };
 
             // เก็บดัชนีล่าสุดลงแคชในเครื่องทุกครั้งที่เปลี่ยนหลังโหลดรอบแรกเสร็จ (จากแคชหรือ cloud ก็ตาม) —
             // ใช้ embLoaded ไม่ใช่ freshLoaded: ถ้าดึงของสดพลาด (ออฟไลน์/quota) การเปลี่ยนแปลงในเครื่อง เช่น กด "ไม่ใช่"
@@ -1066,6 +1107,8 @@
             const buildIndex = async () => {
                 if (!apiUrl) return alert("ยังไม่ได้ตั้งค่า API URL");
                 if (indexingRef.current) return alert("กำลังประมวลผลดัชนีอยู่แล้ว — รอให้รอบปัจจุบันเสร็จก่อน");
+                // ดัชนีจาก cloud ยังมาไม่ครบ = รายการ "รูปที่ยังไม่มีดัชนี" เชื่อไม่ได้ — กดสร้างตอนนี้อาจประมวลผลรูปที่มีดัชนีอยู่แล้วซ้ำทั้งคลัง
+                if (!freshLoaded && !confirm("ดัชนีจาก cloud ยังโหลดไม่ครบ/ล้มเหลว — ถ้าสร้างดัชนีตอนนี้ ระบบอาจประมวลผลรูปที่มีดัชนีอยู่แล้วซ้ำทั้งหมด (เสียเวลาและโควต้า OCR มาก)\n\nแนะนำให้รอโหลดดัชนีให้เสร็จ หรือกด 'ลองใหม่' ก่อน\n\nยืนยันจะสร้างดัชนีต่อเลยหรือไม่?")) return;
                 const targets = findUnindexed();
                 if (targets.length === 0) return alert("ดัชนีรูปครบแล้ว — ไม่มีรูปใหม่ให้ประมวลผล");
                 await runIndexing(targets, false);
@@ -1233,6 +1276,7 @@
 
             return {
                 embeddings, embLoaded, negatives, visualBusy, visualMsg, indexProg, autoHealing,
+                freshLoaded, embLoadProg, embLoadError, retryLoadIndex,
                 queryPreview, setQueryPreview, queryFile, queryEmbedding, visualResults, setVisualResults, visualNotice,
                 buildIndex, handleQueryImage, rejectMatch, undoRejectMatch, clearNegativeExamples
             };
@@ -2283,6 +2327,7 @@
             const imgSearchRef = useRef(null);
             const {
                 embeddings, negatives, visualBusy, visualMsg, indexProg, autoHealing,
+                freshLoaded, embLoadProg, embLoadError, retryLoadIndex,
                 queryPreview, queryFile, visualResults, visualNotice,
                 buildIndex, handleQueryImage, rejectMatch, undoRejectMatch, clearNegativeExamples
             } = useVisualSearch(apiUrl, partImages, partNameMap);
@@ -2377,6 +2422,22 @@
                                 {" "}· ทำดัชนีแล้ว {Object.values(embeddings).reduce((s, arr) => s + (arr?.length || 0), 0)} ภาพ ({Object.keys(embeddings).length} พาร์ท)
                             </span>
                         </div>
+                        {apiUrl && !freshLoaded && !embLoadError && (
+                            <div className="text-xs text-slate-500 flex items-center gap-2">
+                                <div className="loader" style={{width:12,height:12,borderWidth:2}}></div>
+                                <span>
+                                    กำลังโหลดดัชนีจาก cloud{embLoadProg.total ? ` (${embLoadProg.done}/${embLoadProg.total} รูป)` : "..."}
+                                    {" "}— ดัชนีส่วนที่มาถึงแล้วใช้ค้นหาได้ทันที ไม่ต้องรอครบ
+                                </span>
+                            </div>
+                        )}
+                        {embLoadError && (
+                            <div className="text-xs text-red-600 flex items-center gap-2 flex-wrap">
+                                <i className="fa-solid fa-triangle-exclamation"></i>
+                                <span>โหลดดัชนีจาก cloud ไม่สำเร็จ ({embLoadError}) — ค้นหาได้จากดัชนีในเครื่องเท่าที่มี</span>
+                                <button onClick={retryLoadIndex} className="font-bold text-blue-600 hover:underline">ลองใหม่</button>
+                            </div>
+                        )}
 
                         {showTunePanel && <VsTunePanel onClose={() => setShowTunePanel(false)} />}
                         {showNegManager && (
