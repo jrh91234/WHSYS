@@ -271,24 +271,28 @@
             r.onerror = () => rej(r.error);
         });
         const vsCacheGet = async () => {
+            let db = null;
             try {
-                const db = await vsCacheOpen();
+                db = await vsCacheOpen();
                 return await new Promise((res, rej) => {
                     const t = db.transaction('kv').objectStore('kv').get(VS_CACHE_KEY);
                     t.onsuccess = () => res(t.result || null);
                     t.onerror = () => rej(t.error);
                 });
             } catch (e) { return null; } // เครื่องที่ใช้ IndexedDB ไม่ได้ (เช่น private mode เก่า ๆ) = โหลดจาก cloud ตามเดิม
+            finally { if (db) db.close(); } // ปิดทุกครั้ง — เปิดทิ้งไว้สะสมจะช้าและบล็อกการอัปเวอร์ชัน db ในอนาคต
         };
         const vsCachePut = async (data) => {
+            let db = null;
             try {
-                const db = await vsCacheOpen();
+                db = await vsCacheOpen();
                 await new Promise((res, rej) => {
                     const t = db.transaction('kv', 'readwrite').objectStore('kv').put(data, VS_CACHE_KEY);
                     t.onsuccess = res;
                     t.onerror = () => rej(t.error);
                 });
             } catch (e) { console.log("vs cache put failed", e); }
+            finally { if (db) db.close(); }
         };
         let __vsRevalidated = false; // ดึงของสดจาก cloud แค่ครั้งเดียวต่อการเปิดเว็บ — สลับหน้าไปมาไม่โหลดก้อนใหญ่ซ้ำ
 
@@ -928,20 +932,44 @@
                     });
 
                     __vsRevalidated = true;
-                    setEmbeddings(out);
-                    setNegatives(negOut);
+                    // รวมของสดกับสถานะในเครื่องแทนการเขียนทับตรง ๆ — ระหว่างรอโหลด (หลายวินาที) ผู้ใช้อาจกด "ไม่ใช่"
+                    // หรือมีดัชนีที่เพิ่งประมวลผลเสร็จ ซึ่งของสด (ดึงมาก่อนหน้านั้น) ยังไม่รู้จัก เขียนทับจะทำของใหม่หายไป
+                    const completeness = (it) => (it.hasOcr ? 1 : 0) + (it.centerVec ? 1 : 0) + (it.colorHist ? 1 : 0) + (it.patches ? 1 : 0);
+                    setEmbeddings(prev => {
+                        const merged = { ...out };
+                        Object.keys(prev).forEach(p => {
+                            const byId = {};
+                            (merged[p] || []).forEach(it => { byId[it.fileId] = it; });
+                            (prev[p] || []).forEach(it => {
+                                const c = byId[it.fileId];
+                                if (!c || completeness(it) > completeness(c)) byId[it.fileId] = it; // ตัวที่ข้อมูลครบกว่า (เพิ่งอัปเกรด) ชนะ
+                            });
+                            merged[p] = Object.values(byId);
+                        });
+                        return merged;
+                    });
+                    setNegatives(prev => {
+                        const merged = { ...negOut };
+                        Object.keys(prev).forEach(p => {
+                            const seen = new Set((merged[p] || []).map(embToB64));
+                            const extra = (prev[p] || []).filter(v => !seen.has(embToB64(v))); // ตัวอย่างลบที่กดระหว่างรอโหลด
+                            if (extra.length) merged[p] = [...(merged[p] || []), ...extra];
+                        });
+                        return merged;
+                    });
                     setFreshLoaded(true);
                 } catch (e) { console.log("load embeddings failed", e); } // โหลดของสดพลาด = ใช้แคชต่อไป ค้นหายังทำงานได้
                 finally { setEmbLoaded(true); }
             }, [apiUrl]);
             useEffect(() => { if (!embLoaded) loadEmbeddings(); }, [embLoaded, loadEmbeddings]);
 
-            // เก็บดัชนีล่าสุดลงแคชในเครื่องทุกครั้งที่เปลี่ยน (หลังของสดมาแล้วเท่านั้น กันเขียนทับด้วยแคชเก่าของตัวเอง) —
-            // ครอบคลุมทั้งของสดจาก cloud, ดัชนีที่เพิ่งประมวลผลเสร็จ และตัวอย่างลบที่เพิ่งกด
+            // เก็บดัชนีล่าสุดลงแคชในเครื่องทุกครั้งที่เปลี่ยนหลังโหลดรอบแรกเสร็จ (จากแคชหรือ cloud ก็ตาม) —
+            // ใช้ embLoaded ไม่ใช่ freshLoaded: ถ้าดึงของสดพลาด (ออฟไลน์/quota) การเปลี่ยนแปลงในเครื่อง เช่น กด "ไม่ใช่"
+            // ยังต้องถูกเก็บลงแคช ไม่งั้นรีเฟรชแล้วหาย — การเขียนข้อมูลแคชเดิมซ้ำหนึ่งรอบตอนเพิ่งโหลดเป็น no-op ที่ยอมได้
             useEffect(() => {
-                if (!freshLoaded) return;
+                if (!embLoaded) return;
                 vsCachePut({ embeddings, negatives, ts: Date.now() });
-            }, [freshLoaded, embeddings, negatives]);
+            }, [embLoaded, embeddings, negatives]);
 
             // หารูปที่ยังไม่มีดัชนี (หรือทำดัชนีไว้ก่อนมีระบบอ่านตัวหนังสือ) — skipRecentMs ไว้ข้ามรูปที่เพิ่งอัป
             // ซึ่งงาน auto-index เบื้องหลังของมันอาจกำลังวิ่งอยู่ กันประมวลผลซ้ำซ้อนกันเอง
