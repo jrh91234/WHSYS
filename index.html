@@ -946,7 +946,10 @@
                     if (__vsRevalidated) { setEmbLoaded(true); setFreshLoaded(true); return; }
                     setEmbLoadError("");
                     try {
-                        const negPromise = fetch(apiUrl + "?action=getNegativeExamples&t=" + Date.now()).then(r => r.json());
+                        const negPromise = fetch(apiUrl + "?action=getNegativeExamples&t=" + Date.now()).then(r => {
+                            if (!r.ok) throw new Error("HTTP " + r.status); // ให้ข้อความ error บนจออ่านรู้เรื่อง (ไม่ใช่ JSON parse error ปริศนา)
+                            return r.json();
+                        });
                         // โหลดดัชนีทีละก้อนเล็ก ๆ — ก้อนเดียวทั้งคลัง (~10KB/รูป × หลายร้อยรูป) ช้า/ล้มบนมือถือ
                         // แต่ละก้อนที่มาถึงถูกใส่เข้าดัชนีทันที ค้นหาได้เลยไม่ต้องรอครบ + ตัวเลขความคืบหน้าเดินให้เห็น
                         const CHUNK_ROWS = 60;
