@@ -932,6 +932,7 @@
                     const model = await loadVisionModel();
                     const newEmb = { ...embeddings };
                     const toSave = [];
+                    let savedCount = 0; // จำนวนที่บันทึกขึ้น cloud ไปแล้ว (ทยอยบันทึกเป็นชุด ๆ ระหว่างทาง)
                     for (let i = 0; i < targets.length; i++) {
                         if (!isMountedRef.current) break; // ออกจากหน้าแล้ว หยุดงานหนัก — รูปที่เหลือรอบเปิดหน้าครั้งถัดไปเก็บตกต่อ
                         const { partNo: p, fileId, prevOcrText } = targets[i];
@@ -953,16 +954,25 @@
                                 : "·");
                             newEmb[p] = [...(newEmb[p] || []).filter(it => it.fileId !== fileId), { fileId, vector: vec, centerVec, colorHist, patches, tokens: ocrTokens(ocrText), hasOcr: true, ocrText }];
                             toSave.push({ partNo: p, fileId, embedding: packEmbedding(vec, centerVec, colorHist, patches), ocrText });
+                            // ทยอยบันทึกทุก 10 รูป — รอบอัปเกรดดัชนีทั้งคลังกินเวลาหลายนาที ถ้าปิดแท็บกลางคันงานที่ทำแล้วจะได้ไม่หายหมด
+                            // และดัชนีที่เสร็จแล้วใช้ค้นหาได้ทันทีโดยไม่ต้องรอครบทั้งรอบ
+                            if (toSave.length >= 10) {
+                                await fetch(apiUrl, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ action: "save_embeddings", items: toSave }) });
+                                setEmbeddings({ ...newEmb });
+                                savedCount += toSave.length;
+                                toSave.length = 0;
+                            }
                         } catch (err) { console.log("index fail", p, fileId, err); }
                     }
                     setIndexProg({ done: targets.length, total: targets.length });
-                    // บันทึกส่วนที่ประมวลผลไปแล้วเสมอ (แม้ถูกตัดจบเพราะออกจากหน้า) — งานที่ทำแล้วจะได้ไม่สูญเปล่า
+                    // บันทึกส่วนท้ายที่ค้างอยู่เสมอ (แม้ถูกตัดจบเพราะออกจากหน้า) — งานที่ทำแล้วจะได้ไม่สูญเปล่า
                     if (toSave.length) {
                         if (!silent) setVisualMsg("กำลังบันทึกดัชนี...");
                         await fetch(apiUrl, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ action: "save_embeddings", items: toSave }) });
+                        savedCount += toSave.length;
                     }
                     setEmbeddings(newEmb);
-                    if (!silent && isMountedRef.current) alert("สร้างดัชนีรูปเสร็จ: " + toSave.length + " รูป");
+                    if (!silent && isMountedRef.current) alert("สร้างดัชนีรูปเสร็จ: " + savedCount + " รูป");
                 } catch (e) {
                     if (!silent && isMountedRef.current) alert("สร้างดัชนีไม่สำเร็จ: " + e.message);
                     else console.log("index failed", e);
