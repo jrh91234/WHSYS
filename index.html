@@ -260,6 +260,42 @@
             return { vector: b64ToEmb(s), centerVec: null, colorHist: null, patches: null };
         };
 
+        // ===== แคชดัชนีในเครื่อง (IndexedDB) — ดัชนีใหญ่ขึ้นมากหลังเก็บ patch (รูปละ ~10KB) โหลดจาก cloud ทุกครั้งช้าโดยเฉพาะมือถือ =====
+        // เปิดหน้ามาใช้แคชได้ทันที แล้วค่อยดึงของสดจาก cloud เบื้องหลังครั้งเดียวต่อการเปิดเว็บ (stale-while-revalidate)
+        // ใช้ IndexedDB ไม่ใช่ localStorage เพราะเก็บ Float32Array/Set ตรง ๆ ได้ (ไม่ต้องแปลงซ้ำ) และไม่ติดเพดาน ~5MB
+        const VS_CACHE_DB = 'whsys_vs_cache', VS_CACHE_KEY = 'index';
+        const vsCacheOpen = () => new Promise((res, rej) => {
+            const r = indexedDB.open(VS_CACHE_DB, 1);
+            r.onupgradeneeded = () => r.result.createObjectStore('kv');
+            r.onsuccess = () => res(r.result);
+            r.onerror = () => rej(r.error);
+        });
+        const vsCacheGet = async () => {
+            let db = null;
+            try {
+                db = await vsCacheOpen();
+                return await new Promise((res, rej) => {
+                    const t = db.transaction('kv').objectStore('kv').get(VS_CACHE_KEY);
+                    t.onsuccess = () => res(t.result || null);
+                    t.onerror = () => rej(t.error);
+                });
+            } catch (e) { return null; } // เครื่องที่ใช้ IndexedDB ไม่ได้ (เช่น private mode เก่า ๆ) = โหลดจาก cloud ตามเดิม
+            finally { if (db) db.close(); } // ปิดทุกครั้ง — เปิดทิ้งไว้สะสมจะช้าและบล็อกการอัปเวอร์ชัน db ในอนาคต
+        };
+        const vsCachePut = async (data) => {
+            let db = null;
+            try {
+                db = await vsCacheOpen();
+                await new Promise((res, rej) => {
+                    const t = db.transaction('kv', 'readwrite').objectStore('kv').put(data, VS_CACHE_KEY);
+                    t.onsuccess = res;
+                    t.onerror = () => rej(t.error);
+                });
+            } catch (e) { console.log("vs cache put failed", e); }
+            finally { if (db) db.close(); }
+        };
+        let __vsRevalidated = false; // ดึงของสดจาก cloud แค่ครั้งเดียวต่อการเปิดเว็บ — สลับหน้าไปมาไม่โหลดก้อนใหญ่ซ้ำ
+
         // ===== ตรวจรายละเอียดเชิงลึก (patch embedding) — ใช้ตอนคะแนนสูสี แยกพาร์ทที่ต่างกันแค่จุดเล็ก ๆ เช่น จำนวนรู =====
         // MobileNet ทั้งภาพจะเฉลี่ยรายละเอียดเล็ก ๆ ทิ้ง — หั่นรูปเป็น 4 มุม แล้ว embed แยกทีละส่วน (ส่วนกลางภาพใช้เวกเตอร์ centerCrop ที่มีอยู่แล้ว)
         // รูที่หายไป 1 รูจะโผล่เป็นความต่างชัด ๆ ในส่วนนั้น แทนที่จะจมหายไปในค่าเฉลี่ยทั้งภาพ
@@ -858,8 +894,18 @@
             const [visualNotice, setVisualNotice] = useState(""); // ข้อความเตือนประกอบผลค้นหา เช่น "คะแนนสูสี ตรวจรายละเอียดแล้ว โปรดเช็คจำนวนรูก่อนยืนยัน"
             const patchCacheRef = useRef({}); // fileId -> patch vectors ที่คำนวณแล้ว — ค้นซ้ำรูปเดิมไม่ต้องดึง/embed ใหม่ (อยู่แค่ในหน่วยความจำต่อ session)
 
+            const [freshLoaded, setFreshLoaded] = useState(false); // ดัชนี "ของสด" จาก cloud มาถึงแล้ว — งานซ่อมดัชนีรอธงนี้ กันตัดสินจากแคชเก่า
             const loadEmbeddings = React.useCallback(async () => {
                 if (!apiUrl) { setEmbLoaded(true); return; }
+                // ขั้นที่ 1: ใช้แคชในเครื่องก่อน — หน้าพร้อมค้นหาแทบทันที ไม่ต้องรอโหลดก้อนใหญ่จาก cloud (ช้ามากบนมือถือ)
+                const cached = await vsCacheGet();
+                if (cached && cached.embeddings) {
+                    setEmbeddings(cached.embeddings);
+                    setNegatives(cached.negatives || {});
+                    setEmbLoaded(true);
+                }
+                // ขั้นที่ 2: ดึงของสดจาก cloud เบื้องหลัง แค่ครั้งเดียวต่อการเปิดเว็บ — สลับหน้าไปมาไม่โหลดซ้ำ
+                if (__vsRevalidated) { setEmbLoaded(true); setFreshLoaded(true); return; }
                 try {
                     const [embRes, negRes] = await Promise.all([
                         fetch(apiUrl + "?action=getEmbeddings&t=" + Date.now()),
@@ -877,7 +923,6 @@
                             .filter(Boolean);
                         if (list.length) out[p] = list;
                     });
-                    setEmbeddings(out);
 
                     const negJson = await negRes.json();
                     const negOut = {};
@@ -885,11 +930,46 @@
                         const list = (negJson.negatives[p] || []).map(b64ToEmb).filter(Boolean);
                         if (list.length) negOut[p] = list;
                     });
-                    setNegatives(negOut);
-                } catch (e) { console.log("load embeddings failed", e); }
+
+                    __vsRevalidated = true;
+                    // รวมของสดกับสถานะในเครื่องแทนการเขียนทับตรง ๆ — ระหว่างรอโหลด (หลายวินาที) ผู้ใช้อาจกด "ไม่ใช่"
+                    // หรือมีดัชนีที่เพิ่งประมวลผลเสร็จ ซึ่งของสด (ดึงมาก่อนหน้านั้น) ยังไม่รู้จัก เขียนทับจะทำของใหม่หายไป
+                    const completeness = (it) => (it.hasOcr ? 1 : 0) + (it.centerVec ? 1 : 0) + (it.colorHist ? 1 : 0) + (it.patches ? 1 : 0);
+                    setEmbeddings(prev => {
+                        const merged = { ...out };
+                        Object.keys(prev).forEach(p => {
+                            const byId = {};
+                            (merged[p] || []).forEach(it => { byId[it.fileId] = it; });
+                            (prev[p] || []).forEach(it => {
+                                const c = byId[it.fileId];
+                                if (!c || completeness(it) > completeness(c)) byId[it.fileId] = it; // ตัวที่ข้อมูลครบกว่า (เพิ่งอัปเกรด) ชนะ
+                            });
+                            merged[p] = Object.values(byId);
+                        });
+                        return merged;
+                    });
+                    setNegatives(prev => {
+                        const merged = { ...negOut };
+                        Object.keys(prev).forEach(p => {
+                            const seen = new Set((merged[p] || []).map(embToB64));
+                            const extra = (prev[p] || []).filter(v => !seen.has(embToB64(v))); // ตัวอย่างลบที่กดระหว่างรอโหลด
+                            if (extra.length) merged[p] = [...(merged[p] || []), ...extra];
+                        });
+                        return merged;
+                    });
+                    setFreshLoaded(true);
+                } catch (e) { console.log("load embeddings failed", e); } // โหลดของสดพลาด = ใช้แคชต่อไป ค้นหายังทำงานได้
                 finally { setEmbLoaded(true); }
             }, [apiUrl]);
             useEffect(() => { if (!embLoaded) loadEmbeddings(); }, [embLoaded, loadEmbeddings]);
+
+            // เก็บดัชนีล่าสุดลงแคชในเครื่องทุกครั้งที่เปลี่ยนหลังโหลดรอบแรกเสร็จ (จากแคชหรือ cloud ก็ตาม) —
+            // ใช้ embLoaded ไม่ใช่ freshLoaded: ถ้าดึงของสดพลาด (ออฟไลน์/quota) การเปลี่ยนแปลงในเครื่อง เช่น กด "ไม่ใช่"
+            // ยังต้องถูกเก็บลงแคช ไม่งั้นรีเฟรชแล้วหาย — การเขียนข้อมูลแคชเดิมซ้ำหนึ่งรอบตอนเพิ่งโหลดเป็น no-op ที่ยอมได้
+            useEffect(() => {
+                if (!embLoaded) return;
+                vsCachePut({ embeddings, negatives, ts: Date.now() });
+            }, [embLoaded, embeddings, negatives]);
 
             // หารูปที่ยังไม่มีดัชนี (หรือทำดัชนีไว้ก่อนมีระบบอ่านตัวหนังสือ) — skipRecentMs ไว้ข้ามรูปที่เพิ่งอัป
             // ซึ่งงาน auto-index เบื้องหลังของมันอาจกำลังวิ่งอยู่ กันประมวลผลซ้ำซ้อนกันเอง
@@ -993,16 +1073,17 @@
 
             // ซ่อมดัชนีอัตโนมัติ: รูปที่หลุดจากการปิดแอปก่อน auto-index เสร็จ จะถูกเก็บตกให้เองตอนเปิดหน้านี้
             // ข้ามรูปที่เพิ่งอัปภายใน 3 นาที เพราะ auto-index ของมันอาจกำลังวิ่งอยู่ในแท็บนี้/แท็บอื่น
+            // รอดัชนี "ของสด" จาก cloud ก่อนเสมอ — ตัดสินจากแคชเก่าอาจสั่งประมวลผลรูปที่แท้จริงมีดัชนีครบแล้ว
             const [autoHealing, setAutoHealing] = useState(false);
             const autoHealedRef = useRef(false); // ซ่อมครั้งเดียวต่อการเปิดหน้า พอแล้ว — ไม่วนซ้ำกินแบต/โควต้า OCR
             useEffect(() => {
-                if (!embLoaded || !apiUrl || autoHealedRef.current) return;
+                if (!freshLoaded || !apiUrl || autoHealedRef.current) return;
                 const targets = findUnindexed(3 * 60 * 1000);
                 if (targets.length === 0) return;
                 autoHealedRef.current = true;
                 setAutoHealing(true);
                 runIndexing(targets, true).finally(() => setAutoHealing(false));
-            }, [embLoaded]);
+            }, [freshLoaded]);
 
             const handleQueryImage = async (e) => {
                 const file = e.target.files[0]; e.target.value = "";
