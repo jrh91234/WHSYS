@@ -2229,8 +2229,12 @@
                         const json = await res.json();
                         if (json.status !== "success") throw new Error(json.message || "save failed");
                     } catch (e) {
-                        alert("บันทึกค่ากลางขึ้น cloud ไม่สำเร็จ (" + e.message + ") — ค่าจะมีผลเฉพาะเครื่องนี้ไปก่อน ลองบันทึกใหม่อีกครั้ง");
-                    } finally { setSaving(false); }
+                        // ค้าง panel ไว้ให้กดบันทึกซ้ำได้เลย (ค่าที่กรอกยังอยู่ครบ) — ปิดทิ้งทั้งที่ยังไม่ขึ้น cloud จะหลอกว่าสำเร็จแล้ว
+                        alert("บันทึกค่ากลางขึ้น cloud ไม่สำเร็จ (" + e.message + ") — ค่ามีผลเฉพาะเครื่องนี้ไปก่อน กด \"บันทึก (ทุกเครื่อง)\" ซ้ำเพื่อลองใหม่");
+                        setSaving(false);
+                        return;
+                    }
+                    setSaving(false);
                 }
                 onClose();
             };
