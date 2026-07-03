@@ -241,27 +241,35 @@
             } catch (e) { return null; }
         };
         // แพ็คข้อมูลดัชนีของรูป 1 รูปลงช่องเดียวในชีต (คอลัมน์ Embedding เดิม ไม่ต้องแก้ backend):
-        // "v1|<เวกเตอร์เต็มภาพ>|<เวกเตอร์กลางภาพ>|<ลายเซ็นสี>" — ตัวคั่น | ไม่ชนกับ base64 ค่าเก่าที่ไม่มี | อ่านเป็นเวกเตอร์เต็มภาพอย่างเดียว
-        const packEmbedding = (vec, centerVec, hist) => ["v1", embToB64(vec), embToB64(centerVec), hist ? histToB64(hist) : ""].join("|");
+        // "v2|<เต็มภาพ>|<กลางภาพ>|<ลายเซ็นสี>|<patch มุม 4 ตัว>" — ตัวคั่น | ไม่ชนกับ base64
+        // v1 (ไม่มี patch) และค่าเก่าที่ไม่มี | ยังอ่านได้ตามเดิม — patch ที่ขาดจะถูกเติมโดยงานอัปเกรดดัชนีเบื้องหลัง
+        const packEmbedding = (vec, centerVec, hist, patches) =>
+            ["v2", embToB64(vec), embToB64(centerVec), hist ? histToB64(hist) : "", ...(patches || []).map(embToB64)].join("|");
         const unpackEmbedding = (str) => {
             const s = String(str || "");
-            if (s.startsWith("v1|")) {
+            if (s.startsWith("v2|") || s.startsWith("v1|")) {
                 const parts = s.split("|");
-                return { vector: b64ToEmb(parts[1]), centerVec: parts[2] ? b64ToEmb(parts[2]) : null, colorHist: parts[3] ? b64ToHist(parts[3]) : null };
+                const patches = parts.slice(4).map(b64ToEmb).filter(Boolean);
+                return {
+                    vector: b64ToEmb(parts[1]),
+                    centerVec: parts[2] ? b64ToEmb(parts[2]) : null,
+                    colorHist: parts[3] ? b64ToHist(parts[3]) : null,
+                    patches: patches.length === 4 ? patches : null
+                };
             }
-            return { vector: b64ToEmb(s), centerVec: null, colorHist: null };
+            return { vector: b64ToEmb(s), centerVec: null, colorHist: null, patches: null };
         };
 
         // ===== ตรวจรายละเอียดเชิงลึก (patch embedding) — ใช้ตอนคะแนนสูสี แยกพาร์ทที่ต่างกันแค่จุดเล็ก ๆ เช่น จำนวนรู =====
-        // MobileNet ทั้งภาพจะเฉลี่ยรายละเอียดเล็ก ๆ ทิ้ง — หั่นรูปเป็น 4 มุม + กลางภาพ แล้ว embed แยกทีละส่วน
+        // MobileNet ทั้งภาพจะเฉลี่ยรายละเอียดเล็ก ๆ ทิ้ง — หั่นรูปเป็น 4 มุม แล้ว embed แยกทีละส่วน (ส่วนกลางภาพใช้เวกเตอร์ centerCrop ที่มีอยู่แล้ว)
         // รูที่หายไป 1 รูจะโผล่เป็นความต่างชัด ๆ ในส่วนนั้น แทนที่จะจมหายไปในค่าเฉลี่ยทั้งภาพ
+        // คำนวณล่วงหน้าตอนทำดัชนีแล้วเก็บลงชีต — ตอนค้นหาจึงเทียบได้ทันทีไม่ต้องดึงรูป/ประมวลผลซ้ำ
         const embedImagePatches = async (model, imgEl) => {
             const W = imgEl.naturalWidth || imgEl.width, H = imgEl.naturalHeight || imgEl.height;
             const hw = Math.floor(W / 2), hh = Math.floor(H / 2);
             const regions = [
                 [0, 0, hw, hh], [W - hw, 0, hw, hh],                     // บนซ้าย, บนขวา
-                [0, H - hh, hw, hh], [W - hw, H - hh, hw, hh],           // ล่างซ้าย, ล่างขวา
-                [Math.floor(W / 4), Math.floor(H / 4), hw, hh]           // กลางภาพ
+                [0, H - hh, hw, hh], [W - hw, H - hh, hw, hh]            // ล่างซ้าย, ล่างขวา
             ];
             const c = document.createElement('canvas'); c.width = 224; c.height = 224;
             const ctx = c.getContext('2d');
@@ -864,7 +872,7 @@
                             .map(it => {
                                 const u = unpackEmbedding(it.embedding);
                                 if (!u.vector) return null;
-                                return { fileId: it.fileId, vector: u.vector, centerVec: u.centerVec, colorHist: u.colorHist, tokens: ocrTokens(it.ocrText), hasOcr: !!it.ocrText, ocrText: String(it.ocrText || "") };
+                                return { fileId: it.fileId, vector: u.vector, centerVec: u.centerVec, colorHist: u.colorHist, patches: u.patches, tokens: ocrTokens(it.ocrText), hasOcr: !!it.ocrText, ocrText: String(it.ocrText || "") };
                             })
                             .filter(Boolean);
                         if (list.length) out[p] = list;
@@ -895,9 +903,9 @@
                         if (!img.fileId) return;
                         if (skipRecentMs && img.updatedAt && (now - new Date(img.updatedAt).getTime()) < skipRecentMs) return;
                         const existing = indexed[img.fileId];
-                        // ทำดัชนีใหม่ทั้งรูปที่ยังไม่มีดัชนี และรูปดัชนีรุ่นเก่า (ยังไม่มี OCR / เวกเตอร์กลางภาพ / ลายเซ็นสี)
+                        // ทำดัชนีใหม่ทั้งรูปที่ยังไม่มีดัชนี และรูปดัชนีรุ่นเก่า (ยังไม่มี OCR / เวกเตอร์กลางภาพ / ลายเซ็นสี / patch มุม)
                         // ถ้าเคย OCR ไว้แล้ว ส่งข้อความเดิมติดไปด้วย จะได้ไม่เปลืองโควต้า OCR ซ้ำตอนอัปเกรดดัชนี
-                        if (!existing || !existing.hasOcr || !existing.centerVec || !existing.colorHist)
+                        if (!existing || !existing.hasOcr || !existing.centerVec || !existing.colorHist || !existing.patches)
                             targets.push({ partNo: p, fileId: img.fileId, prevOcrText: (existing && existing.hasOcr) ? existing.ocrText : null });
                     });
                 });
@@ -924,6 +932,7 @@
                     const model = await loadVisionModel();
                     const newEmb = { ...embeddings };
                     const toSave = [];
+                    let savedCount = 0; // จำนวนที่บันทึกขึ้น cloud ไปแล้ว (ทยอยบันทึกเป็นชุด ๆ ระหว่างทาง)
                     for (let i = 0; i < targets.length; i++) {
                         if (!isMountedRef.current) break; // ออกจากหน้าแล้ว หยุดงานหนัก — รูปที่เหลือรอบเปิดหน้าครั้งถัดไปเก็บตกต่อ
                         const { partNo: p, fileId, prevOcrText } = targets[i];
@@ -937,23 +946,33 @@
                             const vec = await embedImageEl(model, img);
                             const centerVec = await embedImageEl(model, centerCropCanvas(img)); // เวกเตอร์กลางภาพ — ลดผลพื้นหลังตอนเทียบ
                             const colorHist = colorHistFromImage(img); // ลายเซ็นสีจากกลางภาพ — แยกพาร์ททรงเดียวกันคนละสี
+                            const patches = await embedImagePatches(model, img); // patch 4 มุม — ให้ขั้นตรวจเชิงลึกตอนค้นหาเทียบได้ทันทีไม่ต้องดึงรูป
                             // อ่านตัวหนังสือ/label บนพาร์ทเก็บไว้เทียบด้วย — "·" = อ่านแล้วแต่ไม่มีตัวหนังสือ (กันไม่ให้ถูกจับมาประมวลผลซ้ำทุกครั้ง)
                             // ใช้ข้อความที่เคย OCR ไว้แล้วถ้ามี (กรณีอัปเกรดดัชนีรุ่นเก่า) — รูปใหม่เช็คในเครื่องก่อน (~10ms) ว่ามีตัวหนังสือไหมค่อยยิง OCR
                             const ocrText = prevOcrText != null ? prevOcrText : (mightContainText(img)
                                 ? ((await ocrImageB64(apiUrl, json.base64, json.mimeType || "image/jpeg")) || "·")
                                 : "·");
-                            newEmb[p] = [...(newEmb[p] || []).filter(it => it.fileId !== fileId), { fileId, vector: vec, centerVec, colorHist, tokens: ocrTokens(ocrText), hasOcr: true, ocrText }];
-                            toSave.push({ partNo: p, fileId, embedding: packEmbedding(vec, centerVec, colorHist), ocrText });
+                            newEmb[p] = [...(newEmb[p] || []).filter(it => it.fileId !== fileId), { fileId, vector: vec, centerVec, colorHist, patches, tokens: ocrTokens(ocrText), hasOcr: true, ocrText }];
+                            toSave.push({ partNo: p, fileId, embedding: packEmbedding(vec, centerVec, colorHist, patches), ocrText });
+                            // ทยอยบันทึกทุก 10 รูป — รอบอัปเกรดดัชนีทั้งคลังกินเวลาหลายนาที ถ้าปิดแท็บกลางคันงานที่ทำแล้วจะได้ไม่หายหมด
+                            // และดัชนีที่เสร็จแล้วใช้ค้นหาได้ทันทีโดยไม่ต้องรอครบทั้งรอบ
+                            if (toSave.length >= 10) {
+                                await fetch(apiUrl, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ action: "save_embeddings", items: toSave }) });
+                                setEmbeddings({ ...newEmb });
+                                savedCount += toSave.length;
+                                toSave.length = 0;
+                            }
                         } catch (err) { console.log("index fail", p, fileId, err); }
                     }
                     setIndexProg({ done: targets.length, total: targets.length });
-                    // บันทึกส่วนที่ประมวลผลไปแล้วเสมอ (แม้ถูกตัดจบเพราะออกจากหน้า) — งานที่ทำแล้วจะได้ไม่สูญเปล่า
+                    // บันทึกส่วนท้ายที่ค้างอยู่เสมอ (แม้ถูกตัดจบเพราะออกจากหน้า) — งานที่ทำแล้วจะได้ไม่สูญเปล่า
                     if (toSave.length) {
                         if (!silent) setVisualMsg("กำลังบันทึกดัชนี...");
                         await fetch(apiUrl, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ action: "save_embeddings", items: toSave }) });
+                        savedCount += toSave.length;
                     }
                     setEmbeddings(newEmb);
-                    if (!silent && isMountedRef.current) alert("สร้างดัชนีรูปเสร็จ: " + toSave.length + " รูป");
+                    if (!silent && isMountedRef.current) alert("สร้างดัชนีรูปเสร็จ: " + savedCount + " รูป");
                 } catch (e) {
                     if (!silent && isMountedRef.current) alert("สร้างดัชนีไม่สำเร็จ: " + e.message);
                     else console.log("index failed", e);
@@ -1005,14 +1024,14 @@
                     setQueryEmbedding(q);
                     // ขั้นที่ 1: คะแนนภาพรวมอย่างเดียวก่อน (เร็ว ทำในเครื่องล้วน ๆ) — ยังไม่แตะ OCR
                     const scored = Object.keys(embeddings).map(p => {
-                        let posScore = -1, bestFileId = null, colorSim = null;
+                        let posScore = -1, bestFileId = null, bestItem = null, colorSim = null;
                         embeddings[p].forEach(it => {
                             // เทียบทุกคู่ระหว่าง (เต็มภาพ, กลางภาพ) ของรูปค้นหากับของรูปดัชนี แล้วเอาคู่ที่ดีที่สุด —
                             // คู่กลางภาพ-กลางภาพช่วยเคสที่ฝั่งใดฝั่งหนึ่ง (หรือทั้งคู่) มีพื้นหลังรก ๆ ติดมาเยอะ
                             let s = cosineSim(q, it.vector);
                             if (it.centerVec) s = Math.max(s, cosineSim(q, it.centerVec), cosineSim(qCenter, it.centerVec));
                             s = Math.max(s, cosineSim(qCenter, it.vector));
-                            if (s > posScore) { posScore = s; bestFileId = it.fileId; }
+                            if (s > posScore) { posScore = s; bestFileId = it.fileId; bestItem = it; }
                             if (qHist && it.colorHist) { const cs = histSim(qHist, it.colorHist); if (colorSim == null || cs > colorSim) colorSim = cs; }
                         });
                         const negSim = negatives[p] ? Math.max(0, ...negatives[p].map(v => cosineSim(q, v))) : 0;
@@ -1021,7 +1040,7 @@
                         // ปรับตามสี: สีตรงได้บวก สีคนละเรื่องโดนหัก (สูงสุด ±VS_TUNE.colorSpan/2) — รูปดัชนีรุ่นเก่าที่ยังไม่มีลายเซ็นสีไม่ถูกปรับ
                         const colorAdj = colorSim == null ? 0 : (colorSim - 0.5) * VS_TUNE.colorSpan;
                         const base = posScore - penalty + colorAdj;
-                        return { partNo: p, name: partNameMap[p] || "", base, bestFileId, colorSim, score: Math.min(1, base), textSim: 0 };
+                        return { partNo: p, name: partNameMap[p] || "", base, bestFileId, bestItem, colorSim, score: Math.min(1, base), textSim: 0 };
                     });
                     // ขั้นที่ 2: OCR เฉพาะเมื่อคุ้มจริง ๆ — (ก) มีตัวเต็งที่โบนัสตัวหนังสือ (+0.3 สูงสุด) ยังดันขึ้นถึงเกณฑ์แสดงผลได้
                     // และพาร์ทนั้นมีตัวหนังสือในดัชนีให้เทียบ (ข) รูปที่ถ่ายดูมีตัวหนังสือจริง (เช็คในเครื่อง ~10ms) — ไม่เข้าเงื่อนไขก็ข้าม ไม่เสียเวลารอ backend
@@ -1046,19 +1065,24 @@
                         if (group.length >= 2) {
                             setVisualMsg("คะแนนสูสี — กำลังตรวจรายละเอียดเชิงลึก (รู/ร่อง/จุดต่างเล็ก ๆ)...");
                             try {
-                                const qPatches = await embedImagePatches(model, img);
+                                // ชุด patch ของรูปที่ถ่าย = 4 มุม + กลางภาพ (เวกเตอร์กลางภาพคำนวณไว้แล้วตอนให้คะแนน ไม่ต้อง embed ซ้ำ)
+                                const qPatches = [...(await embedImagePatches(model, img)), qCenter];
                                 // คำนวณคะแนนใหม่พักไว้ก่อน แล้วค่อยใส่จริงเมื่อครบทุกพาร์ทในกลุ่ม —
                                 // ถ้าพลาดกลางคัน (เช่น ดึงรูปพาร์ทใดไม่ได้) จะได้ไม่เหลือคะแนนครึ่ง rerank ครึ่งเดิมปนกันจนอันดับในกลุ่มเพี้ยน
                                 const reranked = [];
                                 for (const r of group) {
                                     if (!r.bestFileId) throw new Error("no indexed image for " + r.partNo);
-                                    let cPatches = patchCacheRef.current[r.bestFileId];
+                                    // ทางเร็ว: ดัชนี v2 มี patch เก็บไว้แล้ว เทียบได้ทันที ไม่ต้องดึงรูป/ประมวลผลอะไรอีก
+                                    let cPatches = (r.bestItem && r.bestItem.patches)
+                                        ? [...r.bestItem.patches, ...(r.bestItem.centerVec ? [r.bestItem.centerVec] : [])]
+                                        : patchCacheRef.current[r.bestFileId];
                                     if (!cPatches) {
+                                        // ทางช้า (เฉพาะดัชนีรุ่นเก่าที่งานอัปเกรดเบื้องหลังยังเก็บตกไม่ถึง): ดึงรูปมาประมวลผลสด
                                         const res = await fetch(apiUrl, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ action: "get_image_b64", fileId: r.bestFileId }) });
                                         const json = await res.json();
                                         if (json.status !== "success" || !json.base64) throw new Error("fetch image failed for " + r.partNo);
                                         const cImg = await dataUrlToImageEl("data:" + (json.mimeType || "image/jpeg") + ";base64," + json.base64);
-                                        cPatches = await embedImagePatches(model, cImg);
+                                        cPatches = [...(await embedImagePatches(model, cImg)), await embedImageEl(model, centerCropCanvas(cImg))];
                                         patchCacheRef.current[r.bestFileId] = cPatches;
                                     }
                                     const detail = patchSetSim(qPatches, cPatches);
@@ -1191,13 +1215,14 @@
                     const vec = await embedImageEl(model, img);
                     const centerVec = await embedImageEl(model, centerCropCanvas(img)); // เวกเตอร์กลางภาพ — ลดผลพื้นหลังตอนเทียบ
                     const colorHist = colorHistFromImage(img); // ลายเซ็นสีจากกลางภาพ — แยกพาร์ททรงเดียวกันคนละสี
+                    const patches = await embedImagePatches(model, img); // patch 4 มุม — ให้ขั้นตรวจเชิงลึกตอนค้นหาเทียบได้ทันที
                     // อ่านตัวหนังสือ/label บนพาร์ทเก็บไว้เทียบด้วย — "·" = อ่านแล้วแต่ไม่มีตัวหนังสือ (กันไม่ให้ถูกจับมาประมวลผลซ้ำ)
                     // เช็คในเครื่องก่อน (~10ms) ว่ารูปมีตัวหนังสือไหมค่อยยิง OCR — รูปเกลี้ยง ๆ ไม่เปลืองโควต้า
                     const ocrText = mightContainText(img) ? ((await ocrImageB64(apiUrl, dataUrl.split(',')[1])) || "·") : "·";
                     await fetch(apiUrl, {
                         method: "POST",
                         headers: { "Content-Type": "text/plain;charset=utf-8" },
-                        body: JSON.stringify({ action: "save_embeddings", items: [{ partNo, fileId, embedding: packEmbedding(vec, centerVec, colorHist), ocrText }] })
+                        body: JSON.stringify({ action: "save_embeddings", items: [{ partNo, fileId, embedding: packEmbedding(vec, centerVec, colorHist, patches), ocrText }] })
                     });
                 } catch (err) {
                     console.log("auto-index (background) failed", partNo, fileId, err);
