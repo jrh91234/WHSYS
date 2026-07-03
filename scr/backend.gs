@@ -135,6 +135,15 @@ function doGet(e) {
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
+    // ค่ากลางของระบบค้นหาด้วยรูป (เกณฑ์/น้ำหนักต่าง ๆ) — admin ตั้งจากหน้าเว็บ มีผลทุกเครื่อง/ทุกผู้ใช้
+    // เก็บใน Script Properties เป็น JSON ก้อนเดียว — คืน { settings: null } ถ้ายังไม่เคยตั้ง
+    if (action == "getVsSettings") {
+      var vsRaw = PropertiesService.getScriptProperties().getProperty("VS_TUNE_SETTINGS");
+      var vsSettings = null;
+      try { vsSettings = vsRaw ? JSON.parse(vsRaw) : null; } catch (err) { vsSettings = null; }
+      return ContentService.createTextOutput(JSON.stringify({ settings: vsSettings })).setMimeType(ContentService.MimeType.JSON);
+    }
+
     // ดึง "ตัวอย่างลบ" ของค้นหาด้วยรูป — เวกเตอร์ของรูปที่ user กดยืนยันว่า "ไม่ใช่พาร์ทนี้"
     // ใช้ลดคะแนนพาร์ทนั้นตอนค้นหาครั้งถัดไปถ้ารูปใหม่คล้ายกับตัวอย่างลบมาก ๆ (กันความสับสนซ้ำ ๆ)
     if (action == "getNegativeExamples") {
@@ -473,6 +482,12 @@ function doPost(e) {
         }
       });
       return ContentService.createTextOutput(JSON.stringify({ status: "success", count: savedCount })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // 3.11.1 บันทึกค่ากลางของระบบค้นหาด้วยรูป — admin ตั้งจากหน้าเว็บ ทุกเครื่อง/ทุกผู้ใช้ดึงไปใช้ตอนเปิดหน้าค้นหา
+    else if (body.action === "save_vs_settings") {
+      PropertiesService.getScriptProperties().setProperty("VS_TUNE_SETTINGS", JSON.stringify(body.settings || {}));
+      return ContentService.createTextOutput(JSON.stringify({ status: "success" })).setMimeType(ContentService.MimeType.JSON);
     }
 
     // 3.12 บันทึก "ตัวอย่างลบ" ของค้นหาด้วยรูป — user กดยืนยันว่ารูปที่ค้นหา "ไม่ใช่" พาร์ทนี้

@@ -859,11 +859,8 @@
         // ===== ค้นหาด้วยรูป (Visual Search) — แยกออกมาเป็นฟังก์ชันเดี่ยว ไม่ฝังลึกอยู่ใน AdvancedMRPView =====
         // embeddings: partNo -> [{ fileId, vector }] — พาร์ทเดียวกันมีได้หลายรูป/หลายมุม คะแนนของพาร์ทคือค่าที่ดีที่สุดในบรรดารูปทั้งหมด
         // ===== ค่าปรับจูนของค้นหาด้วยรูป — admin แก้ได้จากหน้าจอ (ปุ่ม "ตั้งค่า" ในหน้าค้นหาด้วยรูป) =====
-        // เก็บใน localStorage ต่อเครื่อง: เครื่องไหนปรับ เครื่องนั้นได้ผล — ค่าที่ไม่เคยปรับใช้ค่าเริ่มต้นเสมอ
+        // ค่ากลางเก็บบน cloud (Script Properties) บังคับใช้ทุกเครื่อง/ทุกผู้ใช้ — localStorage เป็นแค่สำเนาไว้ใช้ตอนออฟไลน์
         const VS_TUNE_DEFAULTS = {
-            negPenaltyWeight: 0.4, // ทุก ๆ 1 หน่วยความคล้ายกับ "ตัวอย่างลบ" หักคะแนนเท่านี้
-            negMaxPenalty: 0.25,   // เพดานหักคะแนนจากตัวอย่างลบ — กันกดพลาดตัวเดียวลบคะแนนจริงทิ้งหมด
-            rejectAbove: 0.6,      // คะแนนสูงกว่านี้ปิดปุ่ม "ไม่ใช่" กันกดพลาด
             ocrWeight: 0.3,        // โบนัสสูงสุดเมื่อตัวหนังสือ/label ตรงกันเป๊ะ
             minScore: 0.5,         // ตัดผลที่คะแนนต่ำกว่านี้ทิ้ง
             rerankMargin: 0.06,    // อันดับต้นห่างกันน้อยกว่านี้ = สูสี ต้องตรวจรายละเอียดเชิงลึก
@@ -879,17 +876,23 @@
         };
         const VS_TUNE = { ...VS_TUNE_DEFAULTS, ...getStorage('vs_tune', {}) };
         const saveVsTune = (vals) => { Object.assign(VS_TUNE, vals); setStorage('vs_tune', vals); };
+        // ค่ากลางจาก cloud (admin ตั้งครั้งเดียว มีผลทุกเครื่อง/ทุกผู้ใช้) — เขียนทับค่าในเครื่องเสมอ
+        // แล้วเก็บสำเนาลง localStorage ไว้เป็นค่าตั้งต้นรอบถัดไปตอนออฟไลน์/โหลด cloud พลาด
+        const applyVsSettings = (s) => {
+            if (!s) return;
+            const clean = {};
+            Object.keys(VS_TUNE_DEFAULTS).forEach(k => { const n = parseFloat(s[k]); if (!isNaN(n)) clean[k] = n; });
+            if (Object.keys(clean).length) saveVsTune({ ...VS_TUNE_DEFAULTS, ...clean });
+        };
 
         const useVisualSearch = (apiUrl, partImages = {}, partNameMap = {}) => {
             const [embeddings, setEmbeddings] = useState({});
-            const [negatives, setNegatives] = useState({}); // partNo -> [Float32Array, ...] ตัวอย่างที่เคยถูกปฏิเสธว่า "ไม่ใช่พาร์ทนี้"
             const [embLoaded, setEmbLoaded] = useState(false);
             const [visualBusy, setVisualBusy] = useState(false);
             const [visualMsg, setVisualMsg] = useState("");
             const [indexProg, setIndexProg] = useState({ done: 0, total: 0 });
             const [queryPreview, setQueryPreview] = useState("");
             const [queryFile, setQueryFile] = useState(null); // ไฟล์รูปที่ใช้ค้นหาล่าสุด — เก็บไว้เผื่อ user ยืนยันแล้วอยากบันทึกเป็นรูปของพาร์ทนั้นเลย
-            const [queryEmbedding, setQueryEmbedding] = useState(null); // เวกเตอร์ของรูปที่ค้นหาล่าสุด — ใช้ตอนกด "ไม่ใช่พาร์ทนี้" โดยไม่ต้องคำนวณซ้ำ
             const [visualResults, setVisualResults] = useState(null);
             const [visualNotice, setVisualNotice] = useState(""); // ข้อความเตือนประกอบผลค้นหา เช่น "คะแนนสูสี ตรวจรายละเอียดแล้ว โปรดเช็คจำนวนรูก่อนยืนยัน"
             const patchCacheRef = useRef({}); // fileId -> patch vectors ที่คำนวณแล้ว — ค้นซ้ำรูปเดิมไม่ต้องดึง/embed ใหม่ (อยู่แค่ในหน่วยความจำต่อ session)
@@ -939,17 +942,16 @@
                     const cached = await vsCacheGet();
                     if (cached && cached.embeddings) {
                         setEmbeddings(cached.embeddings);
-                        setNegatives(cached.negatives || {});
                         setEmbLoaded(true);
                     }
                     // ขั้นที่ 2: ดึงของสดจาก cloud เบื้องหลัง แค่ครั้งเดียวต่อการเปิดเว็บ — สลับหน้าไปมาไม่โหลดซ้ำ
                     if (__vsRevalidated) { setEmbLoaded(true); setFreshLoaded(true); return; }
                     setEmbLoadError("");
                     try {
-                        const negPromise = fetch(apiUrl + "?action=getNegativeExamples&t=" + Date.now()).then(r => {
-                            if (!r.ok) throw new Error("HTTP " + r.status); // ให้ข้อความ error บนจออ่านรู้เรื่อง (ไม่ใช่ JSON parse error ปริศนา)
-                            return r.json();
-                        });
+                        // ค่ากลางของระบบค้นหา (admin ตั้งจากหน้า "ตั้งค่า") — ดึงคู่ขนานไปกับดัชนี ไม่เพิ่มเวลารอ
+                        // backend รุ่นเก่าที่ยังไม่มี action นี้ / ดึงพลาด = ใช้ค่าในเครื่องเดิมต่อ ไม่กระทบการโหลดหลัก
+                        const settingsPromise = fetch(apiUrl + "?action=getVsSettings&t=" + Date.now())
+                            .then(r => (r.ok ? r.json() : null)).catch(() => null);
                         // โหลดดัชนีทีละก้อนเล็ก ๆ — ก้อนเดียวทั้งคลัง (~10KB/รูป × หลายร้อยรูป) ช้า/ล้มบนมือถือ
                         // แต่ละก้อนที่มาถึงถูกใส่เข้าดัชนีทันที ค้นหาได้เลยไม่ต้องรอครบ + ตัวเลขความคืบหน้าเดินให้เห็น
                         const CHUNK_ROWS = 60;
@@ -967,21 +969,8 @@
                             setEmbLoadProg({ done: Math.min(offset, json.total), total: json.total });
                             if (offset >= json.total) break;
                         }
-                        const negJson = await negPromise;
-                        const negOut = {};
-                        Object.keys(negJson.negatives || {}).forEach(p => {
-                            const list = (negJson.negatives[p] || []).map(b64ToEmb).filter(Boolean);
-                            if (list.length) negOut[p] = list;
-                        });
-                        setNegatives(prev => {
-                            const merged = { ...negOut };
-                            Object.keys(prev).forEach(p => {
-                                const seen = new Set((merged[p] || []).map(embToB64));
-                                const extra = (prev[p] || []).filter(v => !seen.has(embToB64(v))); // ตัวอย่างลบที่กดระหว่างรอโหลด
-                                if (extra.length) merged[p] = [...(merged[p] || []), ...extra];
-                            });
-                            return merged;
-                        });
+                        const settingsJson = await settingsPromise;
+                        if (settingsJson && settingsJson.settings) applyVsSettings(settingsJson.settings);
                         __vsRevalidated = true;
                         setFreshLoaded(true);
                     } catch (e) {
@@ -1005,12 +994,12 @@
             };
 
             // เก็บดัชนีล่าสุดลงแคชในเครื่องทุกครั้งที่เปลี่ยนหลังโหลดรอบแรกเสร็จ (จากแคชหรือ cloud ก็ตาม) —
-            // ใช้ embLoaded ไม่ใช่ freshLoaded: ถ้าดึงของสดพลาด (ออฟไลน์/quota) การเปลี่ยนแปลงในเครื่อง เช่น กด "ไม่ใช่"
+            // ใช้ embLoaded ไม่ใช่ freshLoaded: ถ้าดึงของสดพลาด (ออฟไลน์/quota) ดัชนีที่เพิ่งประมวลผลในเครื่อง
             // ยังต้องถูกเก็บลงแคช ไม่งั้นรีเฟรชแล้วหาย — การเขียนข้อมูลแคชเดิมซ้ำหนึ่งรอบตอนเพิ่งโหลดเป็น no-op ที่ยอมได้
             useEffect(() => {
                 if (!embLoaded) return;
-                vsCachePut({ embeddings, negatives, ts: Date.now() });
-            }, [embLoaded, embeddings, negatives]);
+                vsCachePut({ embeddings, ts: Date.now() });
+            }, [embLoaded, embeddings]);
 
             // หารูปที่ยังไม่มีดัชนี (หรือทำดัชนีไว้ก่อนมีระบบอ่านตัวหนังสือ) — skipRecentMs ไว้ข้ามรูปที่เพิ่งอัป
             // ซึ่งงาน auto-index เบื้องหลังของมันอาจกำลังวิ่งอยู่ กันประมวลผลซ้ำซ้อนกันเอง
@@ -1136,7 +1125,7 @@
                         ? "กำลังสร้างดัชนีรูปอยู่เบื้องหลัง — รอสักครู่แล้วลองค้นหาใหม่"
                         : "ยังไม่มีดัชนีรูป — กดปุ่ม 'สร้าง/อัปเดตดัชนีรูป' ก่อน");
                 }
-                setVisualBusy(true); setVisualMsg("กำลังวิเคราะห์รูป..."); setVisualResults(null); setVisualNotice(""); setQueryFile(file); setQueryEmbedding(null);
+                setVisualBusy(true); setVisualMsg("กำลังวิเคราะห์รูป..."); setVisualResults(null); setVisualNotice(""); setQueryFile(file);
                 try {
                     const dataUrl = await new Promise((res) => { const r = new FileReader(); r.onload = ev => res(ev.target.result); r.readAsDataURL(file); });
                     setQueryPreview(dataUrl);
@@ -1145,7 +1134,6 @@
                     const q = await embedImageEl(model, img);
                     const qCenter = await embedImageEl(model, centerCropCanvas(img)); // เวกเตอร์กลางภาพของรูปที่ถ่าย — เทียบแบบตัดพื้นหลังออก
                     const qHist = colorHistFromImage(img); // ลายเซ็นสีของรูปที่ถ่าย
-                    setQueryEmbedding(q);
                     // ขั้นที่ 1: คะแนนภาพรวมอย่างเดียวก่อน (เร็ว ทำในเครื่องล้วน ๆ) — ยังไม่แตะ OCR
                     const scored = Object.keys(embeddings).map(p => {
                         let posScore = -1, bestFileId = null, bestItem = null, colorSim = null;
@@ -1158,12 +1146,9 @@
                             if (s > posScore) { posScore = s; bestFileId = it.fileId; bestItem = it; }
                             if (qHist && it.colorHist) { const cs = histSim(qHist, it.colorHist); if (colorSim == null || cs > colorSim) colorSim = cs; }
                         });
-                        const negSim = negatives[p] ? Math.max(0, ...negatives[p].map(v => cosineSim(q, v))) : 0;
-                        // จำกัดเพดานการหักคะแนน กันไม่ให้ตัวอย่างลบเพียงอันเดียว (เช่นกดพลาด) ลบล้างคะแนนบวกที่สูงจริง ๆ ทิ้งไปทั้งหมด
-                        const penalty = Math.min(negSim * VS_TUNE.negPenaltyWeight, VS_TUNE.negMaxPenalty);
                         // ปรับตามสี: สีตรงได้บวก สีคนละเรื่องโดนหัก (สูงสุด ±VS_TUNE.colorSpan/2) — รูปดัชนีรุ่นเก่าที่ยังไม่มีลายเซ็นสีไม่ถูกปรับ
                         const colorAdj = colorSim == null ? 0 : (colorSim - 0.5) * VS_TUNE.colorSpan;
-                        const base = posScore - penalty + colorAdj;
+                        const base = posScore + colorAdj;
                         return { partNo: p, name: partNameMap[p] || "", base, bestFileId, bestItem, colorSim, score: Math.min(1, base), textSim: 0 };
                     });
                     // ขั้นที่ 2: OCR เฉพาะเมื่อคุ้มจริง ๆ — (ก) มีตัวเต็งที่โบนัสตัวหนังสือ (+0.3 สูงสุด) ยังดันขึ้นถึงเกณฑ์แสดงผลได้
@@ -1236,49 +1221,11 @@
                 } finally { setVisualBusy(false); setVisualMsg(""); }
             };
 
-            // ยืนยันว่ารูปที่ค้นหา "ไม่ใช่" พาร์ทนี้ -> เก็บเวกเตอร์ไว้เป็นตัวอย่างลบ เพื่อลดคะแนนพาร์ทนี้ในการค้นหาครั้งถัดไปถ้าเจอรูปคล้ายกันอีก
-            // คืนค่า embedding (base64) กลับไปให้ผู้เรียกเก็บไว้ เผื่อกด "เลิกทำ" ทันทีถ้ากดผิดใบ
-            const rejectMatch = async (partNo) => {
-                if (!queryEmbedding) return null;
-                const embedding = embToB64(queryEmbedding);
-                setNegatives(prev => ({ ...prev, [partNo]: [...(prev[partNo] || []), queryEmbedding] }));
-                if (apiUrl) {
-                    await fetch(apiUrl, {
-                        method: "POST",
-                        headers: { "Content-Type": "text/plain;charset=utf-8" },
-                        body: JSON.stringify({ action: "save_negative_example", partNo, embedding })
-                    });
-                }
-                return embedding;
-            };
-
-            // เลิกทำการ "ไม่ใช่" ล่าสุด (กดผิดใบ) — ลบตัวอย่างลบตัวที่เพิ่งสร้างออกทั้งฝั่งเครื่องและฝั่ง cloud
-            const undoRejectMatch = async (partNo, embedding) => {
-                setNegatives(prev => ({ ...prev, [partNo]: (prev[partNo] || []).filter(v => embToB64(v) !== embedding) }));
-                if (!apiUrl) return;
-                await fetch(apiUrl, {
-                    method: "POST",
-                    headers: { "Content-Type": "text/plain;charset=utf-8" },
-                    body: JSON.stringify({ action: "delete_negative_example", partNo, embedding })
-                });
-            };
-
-            // ล้างตัวอย่างลบทั้งหมดของพาร์ทหนึ่ง ๆ — ใช้ตอนเคลียร์ของที่กดพลาดไปแล้วในอดีต (ก่อนมีปุ่มเลิกทำ)
-            const clearNegativeExamples = async (partNo) => {
-                setNegatives(prev => { const n = { ...prev }; delete n[partNo]; return n; });
-                if (!apiUrl) return;
-                await fetch(apiUrl, {
-                    method: "POST",
-                    headers: { "Content-Type": "text/plain;charset=utf-8" },
-                    body: JSON.stringify({ action: "clear_negative_examples", partNo })
-                });
-            };
-
             return {
-                embeddings, embLoaded, negatives, visualBusy, visualMsg, indexProg, autoHealing,
+                embeddings, embLoaded, visualBusy, visualMsg, indexProg, autoHealing,
                 freshLoaded, embLoadProg, embLoadError, retryLoadIndex,
-                queryPreview, setQueryPreview, queryFile, queryEmbedding, visualResults, setVisualResults, visualNotice,
-                buildIndex, handleQueryImage, rejectMatch, undoRejectMatch, clearNegativeExamples
+                queryPreview, setQueryPreview, queryFile, visualResults, setVisualResults, visualNotice,
+                buildIndex, handleQueryImage
             };
         };
 
@@ -2244,7 +2191,6 @@
             { title: "คะแนนและการแสดงผล", icon: "fa-ranking-star", fields: [
                 { key: 'minScore', label: "คะแนนขั้นต่ำที่แสดงผล", hint: "ผลที่คะแนนต่ำกว่านี้ไม่ขึ้นในผลค้นหา", step: 0.05 },
                 { key: 'highCut', label: "เกณฑ์มั่นใจสูง", hint: "ตัวท็อปถึงเกณฑ์นี้จะซ่อนตัวเลือกที่คะแนนต่ำกว่าเกณฑ์ทั้งหมด", step: 0.05 },
-                { key: 'rejectAbove', label: "ปิดปุ่ม \"ไม่ใช่\" เมื่อคะแนนเกิน", hint: "กันกดพลาดไปสร้างตัวอย่างลบผิด ๆ กับผลที่น่าจะถูกอยู่แล้ว", step: 0.05 },
                 { key: 'colorSpan', label: "ผลของสีต่อคะแนน", hint: "สีตรงเป๊ะ +ครึ่งหนึ่งของค่านี้ / สีคนละเรื่อง -ครึ่งหนึ่ง — เพิ่มถ้าพาร์ทคนละสียังติดมา", step: 0.05 },
                 { key: 'colorBadge', label: "เกณฑ์ป้าย \"สีต่าง\"", hint: "ความคล้ายสีต่ำกว่านี้ขึ้นป้ายเตือนบนการ์ดผลลัพธ์", step: 0.05 },
             ]},
@@ -2253,15 +2199,13 @@
                 { key: 'rerankMax', label: "จำนวนพาร์ทที่ตรวจเชิงลึก", hint: "มากขึ้น = ครอบคลุมขึ้นแต่ช้าลง (ต้องดึงรูป + ประมวลผลต่อพาร์ท)", step: 1 },
                 { key: 'detailWeight', label: "น้ำหนักคะแนนรายละเอียด", hint: "0 = ไม่สนรายละเอียด / 1 = ใช้รายละเอียดล้วน", step: 0.05 },
             ]},
-            { title: "ตัวอย่างลบ", icon: "fa-ban", fields: [
-                { key: 'negPenaltyWeight', label: "น้ำหนักหักคะแนน", hint: "หักคะแนนตามความคล้ายกับรูปที่เคยกด \"ไม่ใช่\"", step: 0.05 },
-                { key: 'negMaxPenalty', label: "เพดานหักคะแนน", hint: "กันตัวอย่างลบตัวเดียว (กดพลาด) ลบคะแนนจริงทิ้งหมด", step: 0.05 },
-            ]},
         ];
-        const VsTunePanel = ({ onClose }) => {
+        const VsTunePanel = ({ apiUrl, onClose }) => {
             const [vals, setVals] = useState(() => ({ ...VS_TUNE }));
+            const [saving, setSaving] = useState(false);
             const setVal = (k, v) => setVals(prev => ({ ...prev, [k]: v }));
-            const save = () => {
+            const save = async () => {
+                if (saving) return;
                 // ทำความสะอาดค่าก่อนเก็บ: ช่องที่พิมพ์เพี้ยน (ว่าง/ไม่ใช่ตัวเลข) ถอยกลับค่าเริ่มต้นของช่องนั้น,
                 // ค่าติดลบถูกดันเป็น 0 (น้ำหนักติดลบจะกลับทิศคะแนน เช่น หักคะแนนกลายเป็นโบนัส),
                 // ช่องที่ค่าเริ่มต้นเป็นจำนวนเต็ม (จำนวนจุด/จำนวนพาร์ท/ความคมขอบ) ปัดเศษให้เป็นจำนวนเต็ม
@@ -2272,7 +2216,26 @@
                     const nonNeg = Math.max(0, n);
                     clean[k] = Number.isInteger(VS_TUNE_DEFAULTS[k]) ? Math.round(nonNeg) : nonNeg;
                 });
-                saveVsTune(clean);
+                saveVsTune(clean); // มีผลเครื่องนี้ทันที
+                // บันทึกเป็นค่ากลางขึ้น cloud — ทุกเครื่อง/ทุกผู้ใช้ได้ค่านี้ตอนเปิดหน้าค้นหาครั้งถัดไป
+                if (apiUrl) {
+                    setSaving(true);
+                    try {
+                        const res = await fetch(apiUrl, {
+                            method: "POST",
+                            headers: { "Content-Type": "text/plain;charset=utf-8" },
+                            body: JSON.stringify({ action: "save_vs_settings", settings: clean })
+                        });
+                        const json = await res.json();
+                        if (json.status !== "success") throw new Error(json.message || "save failed");
+                    } catch (e) {
+                        // ค้าง panel ไว้ให้กดบันทึกซ้ำได้เลย (ค่าที่กรอกยังอยู่ครบ) — ปิดทิ้งทั้งที่ยังไม่ขึ้น cloud จะหลอกว่าสำเร็จแล้ว
+                        alert("บันทึกค่ากลางขึ้น cloud ไม่สำเร็จ (" + e.message + ") — ค่ามีผลเฉพาะเครื่องนี้ไปก่อน กด \"บันทึก (ทุกเครื่อง)\" ซ้ำเพื่อลองใหม่");
+                        setSaving(false);
+                        return;
+                    }
+                    setSaving(false);
+                }
                 onClose();
             };
             return (
@@ -2282,7 +2245,7 @@
                             <h4 className="font-bold flex items-center gap-2"><i className="fa-solid fa-sliders text-indigo-500"></i> ตั้งค่าค้นหาด้วยรูป</h4>
                             <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl"><Icons.X/></button>
                         </div>
-                        <p className="text-[11px] text-slate-400 mb-3">ค่าเก็บไว้ในเครื่องนี้เท่านั้น (localStorage) — มีผลทันทีกับการค้นหา/ทำดัชนีครั้งถัดไป ไม่ต้องรีเฟรช · ช่องที่เว้นว่างจะกลับไปใช้ค่าเริ่มต้น</p>
+                        <p className="text-[11px] text-slate-400 mb-3">ค่ากลางของทั้งระบบ — บันทึกแล้วมีผลทุกเครื่อง/ทุกผู้ใช้ (เครื่องนี้ทันที เครื่องอื่นตอนเปิดหน้าค้นหาครั้งถัดไป) · ช่องที่เว้นว่างจะกลับไปใช้ค่าเริ่มต้น</p>
                         {VS_TUNE_GROUPS.map(g => (
                             <div key={g.title} className="mb-4">
                                 <div className="font-bold text-xs text-slate-600 mb-2 flex items-center gap-1.5"><i className={`fa-solid ${g.icon} text-indigo-400`}></i>{g.title}</div>
@@ -2303,7 +2266,7 @@
                         ))}
                         <div className="flex gap-2 pt-1">
                             <button onClick={() => setVals({ ...VS_TUNE_DEFAULTS })} className="px-4 py-2.5 rounded-xl border font-bold text-slate-500 text-sm hover:bg-slate-50">คืนค่าเริ่มต้นทั้งหมด</button>
-                            <button onClick={save} className="flex-1 px-4 py-2.5 rounded-xl bg-indigo-600 text-white font-bold text-sm hover:bg-indigo-700">บันทึก</button>
+                            <button onClick={save} disabled={saving} className="flex-1 px-4 py-2.5 rounded-xl bg-indigo-600 text-white font-bold text-sm hover:bg-indigo-700 disabled:opacity-50">{saving ? "กำลังบันทึก..." : "บันทึก (ทุกเครื่อง)"}</button>
                         </div>
                     </div>
                 </div>
@@ -2326,10 +2289,10 @@
 
             const imgSearchRef = useRef(null);
             const {
-                embeddings, negatives, visualBusy, visualMsg, indexProg, autoHealing,
+                embeddings, visualBusy, visualMsg, indexProg, autoHealing,
                 freshLoaded, embLoadProg, embLoadError, retryLoadIndex,
                 queryPreview, queryFile, visualResults, visualNotice,
-                buildIndex, handleQueryImage, rejectMatch, undoRejectMatch, clearNegativeExamples
+                buildIndex, handleQueryImage
             } = useVisualSearch(apiUrl, partImages, partNameMap);
 
             const {
@@ -2339,8 +2302,7 @@
             } = usePartImageManager(apiUrl, partImages, setPartImages, currentUser);
 
             const [submittingFeedback, setSubmittingFeedback] = useState(false);
-            const [feedbackFor, setFeedbackFor] = useState({}); // partNo -> { type: 'yes'|'no', fileId?, embedding? }
-            const [showNegManager, setShowNegManager] = useState(false);
+            const [feedbackFor, setFeedbackFor] = useState({}); // partNo -> { fileId } รูปค้นหาที่ยืนยัน "ใช่" แล้วถูกบันทึกเป็นรูปของพาร์ทนั้น
             const [showTunePanel, setShowTunePanel] = useState(false); // หน้าตั้งค่าเกณฑ์ค้นหาด้วยรูป — admin เท่านั้น
 
             // ยืนยันว่ารูปที่ค้นหาคือพาร์ทนี้จริง -> บันทึกรูปนั้นเป็นรูปของพาร์ทเพิ่มอีก 1 รูป
@@ -2350,7 +2312,7 @@
                 setSubmittingFeedback(true);
                 try {
                     const json = await uploadOneImage(partNo, queryFile);
-                    setFeedbackFor(prev => ({ ...prev, [partNo]: { type: 'yes', fileId: json.fileId } }));
+                    setFeedbackFor(prev => ({ ...prev, [partNo]: { fileId: json.fileId } }));
                 } catch (err) {
                     alert("บันทึกรูปไม่สำเร็จ: " + err.message);
                 } finally {
@@ -2358,28 +2320,13 @@
                 }
             };
 
-            // ยืนยันว่ารูปที่ค้นหา "ไม่ใช่" พาร์ทนี้ -> เก็บไว้เป็นตัวอย่างลบ กันไม่ให้พาร์ทนี้ขึ้นมาสับสนซ้ำอีกในการค้นหาครั้งถัดไป
-            const handleRejectMatch = async (partNo) => {
-                if (submittingFeedback) return;
-                setSubmittingFeedback(true);
-                try {
-                    const embedding = await rejectMatch(partNo);
-                    setFeedbackFor(prev => ({ ...prev, [partNo]: { type: 'no', embedding } }));
-                } catch (err) {
-                    alert("บันทึกไม่สำเร็จ: " + err.message);
-                } finally {
-                    setSubmittingFeedback(false);
-                }
-            };
-
-            // เลิกทำ "ใช่"/"ไม่ใช่" ล่าสุด — เผื่อกดผิดใบตอนพาร์ทหน้าตาคล้ายกันจนแยกไม่ออก
+            // เลิกทำ "ใช่" ล่าสุด (กดผิดใบ) — ลบรูปที่เพิ่งบันทึกเข้าพาร์ทนั้นออก
             const handleUndoFeedback = async (partNo) => {
                 const fb = feedbackFor[partNo];
                 if (!fb || submittingFeedback) return;
                 setSubmittingFeedback(true);
                 try {
-                    if (fb.type === 'yes' && fb.fileId) await handleDeleteImage(partNo, fb.fileId);
-                    else if (fb.type === 'no' && fb.embedding) await undoRejectMatch(partNo, fb.embedding);
+                    if (fb.fileId) await handleDeleteImage(partNo, fb.fileId);
                     setFeedbackFor(prev => { const n = { ...prev }; delete n[partNo]; return n; });
                 } catch (err) {
                     alert("เลิกทำไม่สำเร็จ: " + err.message);
@@ -2400,7 +2347,7 @@
                         <input type="file" ref={imgSearchRef} onChange={(e) => { setFeedbackFor({}); handleQueryImage(e); }} className="hidden" accept="image/*" capture="environment" />
                         <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4 text-xs text-indigo-800 flex items-start gap-2">
                             <i className="fa-solid fa-circle-info mt-0.5"></i>
-                            <span>ถ่ายรูปพาร์ทเพื่อค้นหาจากทั้งความเหมือนของรูปและตัวหนังสือ/label บนพาร์ท (OCR) — รูปที่อัปใหม่จะถูกสร้างดัชนีให้อัตโนมัติ ส่วนรูปเก่าที่ยังไม่มีดัชนีหรือยังไม่เคยอ่านตัวหนังสือ กดปุ่ม "สร้าง/อัปเดตดัชนีรูป" เพื่อประมวลผลย้อนหลัง — เจอผลลัพธ์ที่ใช่แล้วกด "ใช่" เพื่อฝึกระบบให้แม่นขึ้น หรือกด "ไม่ใช่" ถ้าผลลัพธ์ผิด เพื่อกันไม่ให้พาร์ทนั้นขึ้นมาสับสนซ้ำอีก (กดผิดใบ กด "เลิกทำ" ได้ทันที) — ผลลัพธ์ที่ความเหมือนเกิน {Math.round(VS_TUNE.rejectAbove * 100)}% จะกด "ไม่ใช่" ไม่ได้ เพราะน่าจะถูกจริง ๆ อยู่แล้ว กันกดพลาด</span>
+                            <span>ถ่ายรูปพาร์ทเพื่อค้นหาจากทั้งความเหมือนของรูปและตัวหนังสือ/label บนพาร์ท (OCR) — รูปที่อัปใหม่จะถูกสร้างดัชนีให้อัตโนมัติ ส่วนรูปเก่าที่ยังไม่มีดัชนีหรือยังไม่เคยอ่านตัวหนังสือ กดปุ่ม "สร้าง/อัปเดตดัชนีรูป" เพื่อประมวลผลย้อนหลัง — เจอผลลัพธ์ที่ใช่แล้วกด "ใช่" เพื่อบันทึกรูปที่ถ่ายเข้าพาร์ทนั้นและฝึกระบบให้แม่นขึ้น (กดผิดใบ กด "เลิกทำ" ได้ทันที)</span>
                         </div>
                         <div className="flex flex-wrap gap-2 items-center">
                             <button onClick={()=>imgSearchRef.current && imgSearchRef.current.click()} disabled={visualBusy} className="bg-indigo-600 text-white px-5 py-3 rounded-xl font-bold flex items-center gap-2 disabled:opacity-50 hover:bg-indigo-700">
@@ -2408,9 +2355,6 @@
                             </button>
                             <button onClick={buildIndex} disabled={visualBusy} className="bg-white border px-4 py-3 rounded-xl font-bold text-slate-600 flex items-center gap-2 disabled:opacity-50 hover:bg-slate-50">
                                 <i className="fa-solid fa-database"></i> สร้าง/อัปเดตดัชนีรูป
-                            </button>
-                            <button onClick={()=>setShowNegManager(true)} className="bg-white border px-4 py-3 rounded-xl font-bold text-slate-600 flex items-center gap-2 hover:bg-slate-50">
-                                <i className="fa-solid fa-ban"></i> จัดการตัวอย่างลบ
                             </button>
                             {currentUser?.role === 'ADMIN' && (
                                 <button onClick={()=>setShowTunePanel(true)} title="ปรับเกณฑ์การค้นหาด้วยรูป (เฉพาะ admin)" className="bg-white border px-4 py-3 rounded-xl font-bold text-slate-600 flex items-center gap-2 hover:bg-slate-50">
@@ -2439,35 +2383,7 @@
                             </div>
                         )}
 
-                        {showTunePanel && <VsTunePanel onClose={() => setShowTunePanel(false)} />}
-                        {showNegManager && (
-                            <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 modal-overlay" onClick={() => setShowNegManager(false)}>
-                                <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-5 animate-fade-in max-h-[80vh] overflow-auto" onClick={e => e.stopPropagation()}>
-                                    <div className="flex justify-between items-center mb-3">
-                                        <h4 className="font-bold">ตัวอย่างลบ (Negative Examples)</h4>
-                                        <button onClick={() => setShowNegManager(false)} className="text-slate-400 hover:text-slate-600 text-xl"><Icons.X/></button>
-                                    </div>
-                                    <p className="text-[11px] text-slate-400 mb-3">รูปที่เคยกด "ไม่ใช่" ไว้ต่อพาร์ท — ถ้ากดพลาดไปตั้งแต่ก่อนมีปุ่ม "เลิกทำ" ลบล้างได้จากตรงนี้</p>
-                                    {Object.keys(negatives).length === 0 ? (
-                                        <div className="text-center text-xs text-slate-400 py-6">ยังไม่มีตัวอย่างลบ</div>
-                                    ) : (
-                                        <div className="divide-y">
-                                            {Object.keys(negatives).map(p => (
-                                                <div key={p} className="py-2 flex items-center justify-between gap-2">
-                                                    <div className="min-w-0">
-                                                        <div className="font-mono font-bold text-blue-600 text-sm truncate">{p}</div>
-                                                        <div className="text-[11px] text-slate-500 truncate">{partNameMap[p] || ""} · {negatives[p].length} รูป</div>
-                                                    </div>
-                                                    <button onClick={() => clearNegativeExamples(p)} className="text-red-500 text-xs font-bold hover:bg-red-50 px-2 py-1 rounded-lg whitespace-nowrap">
-                                                        ล้างทั้งหมด
-                                                    </button>
-                                                </div>
-                                            ))}
-                                        </div>
-                                    )}
-                                </div>
-                            </div>
-                        )}
+                        {showTunePanel && <VsTunePanel apiUrl={apiUrl} onClose={() => setShowTunePanel(false)} />}
                         {visualBusy && (
                             <div className="text-sm text-slate-600 flex items-center gap-2">
                                 <div className="loader" style={{width:16,height:16,borderWidth:2}}></div>
@@ -2517,34 +2433,20 @@
                                                     </div>
                                                     {feedbackFor[r.partNo] ? (
                                                         <div className="mt-2 flex items-center justify-between gap-1">
-                                                            <span className={`text-[10px] font-bold ${feedbackFor[r.partNo].type === 'yes' ? 'text-emerald-600' : 'text-slate-400'}`}>
-                                                                <i className={`fa-solid ${feedbackFor[r.partNo].type === 'yes' ? 'fa-check' : 'fa-xmark'} mr-1`}></i>
-                                                                {feedbackFor[r.partNo].type === 'yes' ? 'บันทึกไว้ฝึกระบบแล้ว' : 'บันทึกว่าไม่ใช่แล้ว'}
+                                                            <span className="text-[10px] font-bold text-emerald-600">
+                                                                <i className="fa-solid fa-check mr-1"></i>บันทึกไว้ฝึกระบบแล้ว
                                                             </span>
                                                             <button onClick={() => handleUndoFeedback(r.partNo)} disabled={submittingFeedback}
                                                                 className="text-[10px] text-blue-500 font-bold hover:underline disabled:opacity-50 whitespace-nowrap">
                                                                 เลิกทำ
                                                             </button>
                                                         </div>
-                                                    ) : r.score >= VS_TUNE.rejectAbove ? (
+                                                    ) : (
                                                         <button onClick={() => handleConfirmMatch(r.partNo)} disabled={submittingFeedback}
                                                             title="ยืนยันว่ารูปที่ค้นหาคือพาร์ทนี้ เพื่อนำไปฝึกระบบให้แม่นขึ้น"
                                                             className="mt-2 w-full bg-emerald-600 text-white text-[10px] font-bold py-1.5 rounded-lg hover:bg-emerald-700 disabled:opacity-50">
                                                             ใช่ ✓
                                                         </button>
-                                                    ) : (
-                                                        <div className="mt-2 grid grid-cols-2 gap-1">
-                                                            <button onClick={() => handleConfirmMatch(r.partNo)} disabled={submittingFeedback}
-                                                                title="ยืนยันว่ารูปที่ค้นหาคือพาร์ทนี้ เพื่อนำไปฝึกระบบให้แม่นขึ้น"
-                                                                className="bg-emerald-600 text-white text-[10px] font-bold py-1.5 rounded-lg hover:bg-emerald-700 disabled:opacity-50">
-                                                                ใช่ ✓
-                                                            </button>
-                                                            <button onClick={() => handleRejectMatch(r.partNo)} disabled={submittingFeedback}
-                                                                title="ยืนยันว่ารูปที่ค้นหาไม่ใช่พาร์ทนี้ กันไม่ให้ขึ้นมาสับสนซ้ำอีก"
-                                                                className="bg-slate-100 text-slate-600 text-[10px] font-bold py-1.5 rounded-lg hover:bg-slate-200 disabled:opacity-50">
-                                                                ไม่ใช่ ✕
-                                                            </button>
-                                                        </div>
                                                     )}
                                                 </div>
                                             ))}
