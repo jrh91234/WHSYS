@@ -52,6 +52,7 @@
         const STORAGE_KEY_BOM_DATA = "nlc_erp_bom_data";
         const STORAGE_KEY_BOM_VERSION = "nlc_erp_bom_version";
         const STORAGE_KEY_PART_IMAGES = "nlc_erp_part_images";
+        const STORAGE_KEY_PART_CART = "nlc_erp_part_cart";
 
         // สร้าง URL รูป thumbnail จาก Google Drive fileId (ไฟล์ต้องตั้งแชร์ "ใครมีลิงก์ดูได้")
         const driveThumb = (fileId, size = 400) => fileId ? `https://drive.google.com/thumbnail?id=${fileId}&sz=w${size}` : "";
@@ -854,6 +855,33 @@
             };
 
             return { searchPartQuery, setSearchPartQuery, partSearchResults, setPartSearchResults, handlePartSearch };
+        };
+
+        // ===== ตะกร้าพาร์ท — เก็บพาร์ทที่เลือกจากผลค้นหาไว้รวมกัน แล้ว export เป็น Excel ทีเดียว =====
+        // เก็บใน localStorage เพื่อให้ตะกร้าคงอยู่ข้ามการค้นหาหลายรอบ (พาร์ทเดียวกันคนละโมเดลนับเป็นคนละรายการ)
+        const cartKeyOf = (it) => `${String(it.partNo || "").trim()}||${it.model || ""}`;
+        const usePartCart = () => {
+            const [cart, setCart] = useState(() => getStorage(STORAGE_KEY_PART_CART, []));
+            useEffect(() => { setStorage(STORAGE_KEY_PART_CART, cart); }, [cart]);
+
+            const inCart = (it) => cart.some(c => cartKeyOf(c) === cartKeyOf(it));
+            const toggleCart = (it) => setCart(prev => {
+                const k = cartKeyOf(it);
+                if (prev.some(c => cartKeyOf(c) === k)) return prev.filter(c => cartKeyOf(c) !== k);
+                return [...prev, {
+                    partNo: String(it.partNo || "").trim(),
+                    name: it.name || "",
+                    model: it.model || "",
+                    qtyPerUnit: it.qty || 0,
+                    type: it.type || "-",
+                    qty: 1
+                }];
+            });
+            const removeFromCart = (key) => setCart(prev => prev.filter(c => cartKeyOf(c) !== key));
+            const setCartQty = (key, qty) => setCart(prev => prev.map(c => cartKeyOf(c) === key ? { ...c, qty } : c));
+            const clearCart = () => setCart([]);
+
+            return { cart, inCart, toggleCart, removeFromCart, setCartQty, clearCart };
         };
 
         // ===== ค้นหาด้วยรูป (Visual Search) — แยกออกมาเป็นฟังก์ชันเดี่ยว ไม่ฝังลึกอยู่ใน AdvancedMRPView =====
@@ -2066,6 +2094,22 @@
                 pickImageFor, handleImageFile, handleDeleteImage,
                 imagesFor, imgSrcFor, imgSrcForFile, coverFileId
             } = usePartImageManager(apiUrl, partImages, setPartImages, currentUser);
+            const { cart, inCart, toggleCart, removeFromCart, setCartQty, clearCart } = usePartCart();
+            const [activeTab, setActiveTab] = useState('search'); // 'search' | 'cart'
+
+            const exportCartExcel = () => {
+                if (cart.length === 0) return alert("ตะกร้าว่าง — ยังไม่มีพาร์ทที่เลือกไว้");
+                const data = cart.map(it => ({
+                    "Part No": it.partNo,
+                    "Name": it.name,
+                    "Used In (Model)": it.model,
+                    "Qty/Unit": it.qtyPerUnit,
+                    "Type": it.type,
+                    "จำนวน": parseFloat(it.qty) || 0,
+                    "รูป (ลิงก์)": driveViewLink(partImages, it.partNo)
+                }));
+                exportToExcel(data, "Part_Cart", "Parts");
+            };
 
             const exportSearchExcel = () => {
                 if (!partSearchResults || partSearchResults.length === 0) return alert("ไม่มีผลการค้นหาให้ export");
@@ -2089,8 +2133,20 @@
                         imagesFor={imagesFor} imgSrcForFile={imgSrcForFile} pickImageFor={pickImageFor} handleDeleteImage={handleDeleteImage} />
 
                     <div className="bg-white p-6 rounded-2xl shadow-sm border">
-                        <h3 className="font-bold mb-6 flex items-center gap-2"><Icons.Search/> ค้นหาพาร์ท</h3>
+                        <div className="flex flex-wrap justify-between items-center gap-3 mb-6">
+                            <h3 className="font-bold flex items-center gap-2"><Icons.Search/> ค้นหาพาร์ท</h3>
+                            <div className="flex bg-slate-100 p-1 rounded-lg text-xs font-bold">
+                                <button onClick={() => setActiveTab('search')} className={`px-3 py-1.5 rounded-md transition flex items-center gap-1.5 ${activeTab==='search' ? 'bg-white shadow text-orange-600' : 'text-slate-500'}`}>
+                                    <i className="fa-solid fa-magnifying-glass"></i> ค้นหา
+                                </button>
+                                <button onClick={() => setActiveTab('cart')} className={`px-3 py-1.5 rounded-md transition flex items-center gap-1.5 ${activeTab==='cart' ? 'bg-white shadow text-orange-600' : 'text-slate-500'}`}>
+                                    <i className="fa-solid fa-cart-shopping"></i> ตะกร้า
+                                    {cart.length > 0 && <span className="bg-orange-500 text-white rounded-full px-1.5 py-0.5 text-[10px] leading-none">{cart.length}</span>}
+                                </button>
+                            </div>
+                        </div>
 
+                        {activeTab === 'search' && (<React.Fragment>
                         <div className="flex gap-2 mb-6">
                             <input
                                 type="text"
@@ -2125,11 +2181,12 @@
                                                 <th className="p-3">Used In (Model)</th>
                                                 <th className="p-3 text-right">Qty/Unit</th>
                                                 <th className="p-3 text-center">Type</th>
+                                                <th className="p-3 text-center w-16">ตะกร้า</th>
                                             </tr>
                                         </thead>
                                         <tbody className="divide-y">
                                             {partSearchResults.length === 0 ? (
-                                                <tr><td colSpan="5" className="p-8 text-center text-slate-400">ไม่พบข้อมูล</td></tr>
+                                                <tr><td colSpan="6" className="p-8 text-center text-slate-400">ไม่พบข้อมูล</td></tr>
                                             ) : (
                                                 partSearchResults.map((item, idx) => {
                                                     const sPartNo = String(item.partNo||"").trim();
@@ -2165,6 +2222,13 @@
                                                         <td className="p-3 font-bold text-slate-700">{item.model}</td>
                                                         <td className="p-3 text-right">{formatNum(item.qty)}</td>
                                                         <td className="p-3 text-center">{item.type}</td>
+                                                        <td className="p-2 text-center">
+                                                            <button onClick={() => toggleCart(item)}
+                                                                title={inCart(item) ? "อยู่ในตะกร้าแล้ว — กดเพื่อเอาออก" : "เพิ่มเข้าตะกร้า"}
+                                                                className={`w-8 h-8 rounded-lg border transition mx-auto flex items-center justify-center ${inCart(item) ? 'bg-emerald-500 border-emerald-500 text-white hover:bg-emerald-600' : 'border-slate-200 text-slate-400 hover:text-orange-500 hover:border-orange-400'}`}>
+                                                                <i className={`fa-solid ${inCart(item) ? 'fa-check' : 'fa-cart-plus'}`}></i>
+                                                            </button>
+                                                        </td>
                                                     </tr>
                                                     );
                                                 })
@@ -2173,6 +2237,76 @@
                                     </table>
                                 </div>
                             </div>
+                        )}
+                        </React.Fragment>)}
+
+                        {activeTab === 'cart' && (
+                            cart.length === 0 ? (
+                                <div className="p-12 text-center text-slate-400">
+                                    <i className="fa-solid fa-cart-shopping text-4xl mb-3 block"></i>
+                                    ตะกร้าว่าง — ไปที่แท็บ "ค้นหา" แล้วกดปุ่ม <i className="fa-solid fa-cart-plus"></i> ท้ายรายการที่ต้องการ
+                                </div>
+                            ) : (
+                                <div className="overflow-hidden border rounded-xl">
+                                    <div className="bg-orange-50 p-3 text-xs font-bold text-orange-800 border-b flex justify-between items-center gap-2">
+                                        <span>พาร์ทที่เลือกไว้: {cart.length} รายการ</span>
+                                        <div className="flex gap-2">
+                                            <button onClick={exportCartExcel} className="bg-emerald-600 text-white px-3 py-1 rounded-lg font-bold flex items-center gap-1 hover:bg-emerald-700"><i className="fa-solid fa-file-excel"></i> Export Excel</button>
+                                            <button onClick={() => { if (confirm(`ล้างตะกร้าทั้งหมด ${cart.length} รายการ?`)) clearCart(); }} className="bg-slate-200 text-slate-600 px-3 py-1 rounded-lg font-bold flex items-center gap-1 hover:bg-red-100 hover:text-red-600"><i className="fa-solid fa-trash-can"></i> ล้างตะกร้า</button>
+                                        </div>
+                                    </div>
+                                    <div className="overflow-auto max-h-96">
+                                        <table className="w-full text-xs text-left">
+                                            <thead className="bg-white sticky top-0">
+                                                <tr className="border-b text-slate-500">
+                                                    <th className="p-3 w-14">รูป</th>
+                                                    <th className="p-3">Part No / Name</th>
+                                                    <th className="p-3">Used In (Model)</th>
+                                                    <th className="p-3 text-right">Qty/Unit</th>
+                                                    <th className="p-3 text-center">Type</th>
+                                                    <th className="p-3 text-center w-24">จำนวน</th>
+                                                    <th className="p-3 text-center w-14">ลบ</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y">
+                                                {cart.map((item) => {
+                                                    const key = cartKeyOf(item);
+                                                    const cThumb = item.partNo ? imgSrcFor(item.partNo) : "";
+                                                    return (
+                                                        <tr key={key} className="hover:bg-slate-50">
+                                                            <td className="p-2 text-center">
+                                                                {cThumb ? (
+                                                                    <DriveImg src={cThumb} fileId={coverFileId(item.partNo)} size={400} alt={item.partNo}
+                                                                        onClick={() => setLightbox({ partNo: item.partNo, fileId: coverFileId(item.partNo), src: imgSrcFor(item.partNo, 1600) })}
+                                                                        className="w-9 h-9 object-cover rounded border cursor-zoom-in mx-auto" />
+                                                                ) : (
+                                                                    <div className="w-9 h-9 rounded border border-dashed border-slate-200 text-slate-200 mx-auto flex items-center justify-center"><i className="fa-solid fa-image"></i></div>
+                                                                )}
+                                                            </td>
+                                                            <td className="p-3">
+                                                                <div className="font-bold text-blue-600">{item.partNo}</div>
+                                                                <div className="text-slate-500">{item.name}</div>
+                                                            </td>
+                                                            <td className="p-3 font-bold text-slate-700">{item.model}</td>
+                                                            <td className="p-3 text-right">{formatNum(item.qtyPerUnit)}</td>
+                                                            <td className="p-3 text-center">{item.type}</td>
+                                                            <td className="p-2 text-center">
+                                                                <input type="number" min="0" value={item.qty}
+                                                                    onChange={e => setCartQty(key, e.target.value)}
+                                                                    className="w-20 p-1.5 border rounded-lg text-center outline-none focus:ring-2 focus:ring-orange-100" />
+                                                            </td>
+                                                            <td className="p-2 text-center">
+                                                                <button onClick={() => removeFromCart(key)} title="เอาออกจากตะกร้า"
+                                                                    className="w-8 h-8 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 mx-auto flex items-center justify-center"><i className="fa-solid fa-xmark"></i></button>
+                                                            </td>
+                                                        </tr>
+                                                    );
+                                                })}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            )
                         )}
                     </div>
                 </div>
