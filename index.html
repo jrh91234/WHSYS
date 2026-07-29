@@ -915,6 +915,10 @@
 
         const useVisualSearch = (apiUrl, partImages = {}, partNameMap = {}) => {
             const [embeddings, setEmbeddings] = useState({});
+            // เงาของ embeddings ไว้อ่านในงาน async ที่ค้างข้าม render (เช่น ค้นหาที่รอดัชนีก้อนแรกมาถึง) —
+            // closure ของ handler จับค่า ณ render ที่ผูก event ไว้ ถ้าอ่านจาก state ตรง ๆ หลัง await จะได้ของเก่าเสมอ
+            const embeddingsRef = useRef({});
+            useEffect(() => { embeddingsRef.current = embeddings; }, [embeddings]);
             const [embLoaded, setEmbLoaded] = useState(false);
             const [visualBusy, setVisualBusy] = useState(false);
             const [visualMsg, setVisualMsg] = useState("");
@@ -928,6 +932,8 @@
             const [freshLoaded, setFreshLoaded] = useState(false); // ดัชนี "ของสด" จาก cloud มาถึงครบแล้ว — งานซ่อมดัชนีรอธงนี้ กันตัดสินจากแคชเก่า
             const [embLoadProg, setEmbLoadProg] = useState({ done: 0, total: 0 }); // ความคืบหน้าโหลดดัชนีจาก cloud (นับเป็นแถวรูป)
             const [embLoadError, setEmbLoadError] = useState(""); // โหลดดัชนีพลาด — โชว์ให้เห็น + มีปุ่มลองใหม่ (เดิมกลืนเงียบลง console ผู้ใช้ไม่รู้ว่าค้างอยู่ตรงไหน)
+            const embLoadErrorRef = useRef("");                  // อ่านหลัง await ได้ค่าล่าสุดจริง (เช่น โหลดพังระหว่างที่การค้นหากำลังรอดัชนีอยู่)
+            useEffect(() => { embLoadErrorRef.current = embLoadError; }, [embLoadError]);
             const embLoadingRef = useRef(false); // กันโหลดซ้อนกัน (เช่น กดลองใหม่รัว ๆ)
 
             // แปลงข้อมูลดัชนีดิบ 1 ก้อนจาก cloud แล้วรวมเข้าสถานะแบบระวัง: ตัวที่ข้อมูลครบกว่า (เช่น เพิ่งอัปเกรด/ประมวลผลในเครื่อง) ชนะ —
@@ -968,12 +974,16 @@
                 try {
                     // ขั้นที่ 1: ใช้แคชในเครื่องก่อน — หน้าพร้อมค้นหาแทบทันที ไม่ต้องรอโหลดก้อนใหญ่จาก cloud (ช้ามากบนมือถือ)
                     const cached = await vsCacheGet();
-                    if (cached && cached.embeddings) {
+                    const haveCache = !!(cached && cached.embeddings && Object.keys(cached.embeddings).length);
+                    if (haveCache) {
                         setEmbeddings(cached.embeddings);
                         setEmbLoaded(true);
                     }
                     // ขั้นที่ 2: ดึงของสดจาก cloud เบื้องหลัง แค่ครั้งเดียวต่อการเปิดเว็บ — สลับหน้าไปมาไม่โหลดซ้ำ
-                    if (__vsRevalidated) { setEmbLoaded(true); setFreshLoaded(true); return; }
+                    // ข้ามได้เฉพาะเมื่อ "มีดัชนีในแคชให้ใช้จริง" เท่านั้น — ธง __vsRevalidated อยู่ระดับหน้าเว็บ แต่ตัวดัชนีเป็น state
+                    // ของ component ที่ถูกล้างทุกครั้งที่สลับหน้า ถ้าแคชเขียนไม่ลง (โควต้าเต็ม/private mode) การข้ามตรงนี้
+                    // จะทำให้กลับเข้าหน้ามาแล้วดัชนีว่างถาวร → ค้นหาไม่ได้ และงานเก็บตกดัชนีจะเข้าใจผิดว่าทั้งคลังยังไม่มีดัชนี
+                    if (__vsRevalidated && haveCache) { setEmbLoaded(true); setFreshLoaded(true); return; }
                     setEmbLoadError("");
                     try {
                         // ค่ากลางของระบบค้นหา (admin ตั้งจากหน้า "ตั้งค่า") — ดึงคู่ขนานไปกับดัชนี ไม่เพิ่มเวลารอ
@@ -1058,6 +1068,19 @@
                 return () => { isMountedRef.current = false; };
             }, []);
 
+            // ใส่ดัชนีที่เพิ่งประมวลผลเสร็จกลับเข้า state แบบ "รวม" ไม่ใช่ "ทับ" — รอบประมวลผลกินเวลาหลายนาที
+            // ระหว่างนั้นดัชนีก้อนใหม่จาก cloud ยังทยอยมาถึงเรื่อย ๆ ถ้าเขียนทับด้วยสำเนาที่ถ่ายไว้ตอนเริ่ม ของที่มาถึงระหว่างทางจะหายหมด
+            const mergeIndexed = (items) => {
+                if (!items.length) return;
+                setEmbeddings(prev => {
+                    const merged = { ...prev };
+                    items.forEach(({ partNo, item }) => {
+                        merged[partNo] = [...(merged[partNo] || []).filter(it => it.fileId !== item.fileId), item];
+                    });
+                    return merged;
+                });
+            };
+
             // ประมวลผลดัชนีตามรายการที่ระบุ: ดึงรูปจาก Drive (ผ่าน proxy) -> แปลงเวกเตอร์ + OCR -> บันทึก — ทำทีละรูป
             // silent = โหมดซ่อมอัตโนมัติเบื้องหลัง (ไม่เด้ง alert ไม่ล็อกปุ่มค้นหา)
             const indexingRef = useRef(false); // กันดัชนีวิ่งซ้อนกัน 2 ชุด (auto + กดปุ่มเอง)
@@ -1068,8 +1091,8 @@
                 setIndexProg({ done: 0, total: targets.length });
                 try {
                     const model = await loadVisionModel();
-                    const newEmb = { ...embeddings };
                     const toSave = [];
+                    const toMerge = []; // ดัชนีที่เพิ่งประมวลผลเสร็จ รอใส่กลับเข้า state เป็นชุด
                     let savedCount = 0; // จำนวนที่บันทึกขึ้น cloud ไปแล้ว (ทยอยบันทึกเป็นชุด ๆ ระหว่างทาง)
                     for (let i = 0; i < targets.length; i++) {
                         if (!isMountedRef.current) break; // ออกจากหน้าแล้ว หยุดงานหนัก — รูปที่เหลือรอบเปิดหน้าครั้งถัดไปเก็บตกต่อ
@@ -1090,15 +1113,16 @@
                             const ocrText = prevOcrText != null ? prevOcrText : (mightContainText(img)
                                 ? ((await ocrImageB64(apiUrl, json.base64, json.mimeType || "image/jpeg")) || "·")
                                 : "·");
-                            newEmb[p] = [...(newEmb[p] || []).filter(it => it.fileId !== fileId), { fileId, vector: vec, centerVec, colorHist, patches, tokens: ocrTokens(ocrText), hasOcr: true, ocrText }];
+                            toMerge.push({ partNo: p, item: { fileId, vector: vec, centerVec, colorHist, patches, tokens: ocrTokens(ocrText), hasOcr: true, ocrText } });
                             toSave.push({ partNo: p, fileId, embedding: packEmbedding(vec, centerVec, colorHist, patches), ocrText });
                             // ทยอยบันทึกทุก 10 รูป — รอบอัปเกรดดัชนีทั้งคลังกินเวลาหลายนาที ถ้าปิดแท็บกลางคันงานที่ทำแล้วจะได้ไม่หายหมด
                             // และดัชนีที่เสร็จแล้วใช้ค้นหาได้ทันทีโดยไม่ต้องรอครบทั้งรอบ
                             if (toSave.length >= 10) {
                                 await fetch(apiUrl, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ action: "save_embeddings", items: toSave }) });
-                                setEmbeddings({ ...newEmb });
+                                mergeIndexed(toMerge);
                                 savedCount += toSave.length;
                                 toSave.length = 0;
+                                toMerge.length = 0;
                             }
                         } catch (err) { console.log("index fail", p, fileId, err); }
                     }
@@ -1109,7 +1133,7 @@
                         await fetch(apiUrl, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ action: "save_embeddings", items: toSave }) });
                         savedCount += toSave.length;
                     }
-                    setEmbeddings(newEmb);
+                    mergeIndexed(toMerge);
                     if (!silent && isMountedRef.current) alert("สร้างดัชนีรูปเสร็จ: " + savedCount + " รูป");
                 } catch (e) {
                     if (!silent && isMountedRef.current) alert("สร้างดัชนีไม่สำเร็จ: " + e.message);
@@ -1138,34 +1162,61 @@
             const autoHealedRef = useRef(false); // ซ่อมครั้งเดียวต่อการเปิดหน้า พอแล้ว — ไม่วนซ้ำกินแบต/โควต้า OCR
             useEffect(() => {
                 if (!freshLoaded || !apiUrl || autoHealedRef.current) return;
+                // คลังมีรูปอยู่แต่ดัชนีในมือว่างเปล่า = "ดัชนียังมาไม่ถึง" ไม่ใช่ "ทั้งคลังยังไม่เคยทำดัชนี" —
+                // ถ้าเชื่อตรงนี้จะสั่งประมวลผลใหม่ยกคลัง (กินเวลา/โควต้า OCR มหาศาล) และผู้ใช้ใหม่จะโดนบล็อกไม่ให้ค้นหา
+                // ระหว่างรอ รอให้ดัชนีเข้ามาก่อนแล้ว effect นี้จะถูกเรียกอีกรอบเอง (autoHealedRef กันไม่ให้ทำซ้ำ)
+                const havePhotos = Object.values(partImages).some(arr => arr && arr.length);
+                if (havePhotos && Object.keys(embeddings).length === 0) return;
                 const targets = findUnindexed(3 * 60 * 1000);
                 if (targets.length === 0) return;
                 autoHealedRef.current = true;
                 setAutoHealing(true);
                 runIndexing(targets, true).finally(() => setAutoHealing(false));
-            }, [freshLoaded]);
+            }, [freshLoaded, embeddings]);
+
+            // รอดัชนีก้อนแรกจาก cloud — ผู้ใช้เครื่องใหม่/เพิ่งล้างแคชจะเปิดหน้ามาแล้วดัชนียังว่างอยู่ชั่วครู่
+            // ไม่ต้องรอครบทั้งคลัง แค่มีของให้เทียบก็ค้นได้ (ดัชนีที่เหลือทยอยมาเอง) — เกินเวลาก็ปล่อยผ่านไปค้นเท่าที่มี
+            const waitForIndex = async (timeoutMs = 45000) => {
+                const t0 = Date.now();
+                while (Object.keys(embeddingsRef.current).length === 0
+                    && (embLoadingRef.current || indexingRef.current)
+                    && isMountedRef.current
+                    && Date.now() - t0 < timeoutMs) {
+                    await new Promise(r => setTimeout(r, 300));
+                }
+                return Object.keys(embeddingsRef.current).length > 0;
+            };
 
             const handleQueryImage = async (e) => {
                 const file = e.target.files[0]; e.target.value = "";
                 if (!file) return;
-                if (Object.keys(embeddings).length === 0) {
-                    return alert(indexingRef.current
-                        ? "กำลังสร้างดัชนีรูปอยู่เบื้องหลัง — รอสักครู่แล้วลองค้นหาใหม่"
-                        : "ยังไม่มีดัชนีรูป — กดปุ่ม 'สร้าง/อัปเดตดัชนีรูป' ก่อน");
-                }
                 setVisualBusy(true); setVisualMsg("กำลังวิเคราะห์รูป..."); setVisualResults(null); setVisualNotice(""); setQueryFile(file);
                 try {
                     const dataUrl = await new Promise((res) => { const r = new FileReader(); r.onload = ev => res(ev.target.result); r.readAsDataURL(file); });
                     setQueryPreview(dataUrl);
+                    // ดัชนียังว่าง = ยังโหลด/ยังเก็บตกไม่ถึง ไม่ใช่ "ไม่มีดัชนี" — รูปถ่ายมาแล้ว รอให้แทนที่จะไล่ให้ไปกดสร้างดัชนีใหม่ทั้งคลัง
+                    if (Object.keys(embeddingsRef.current).length === 0) {
+                        setVisualMsg("กำลังรอดัชนีรูปจาก cloud...");
+                        await waitForIndex();
+                    }
+                    // อ่านดัชนีจาก ref ไม่ใช่ตัวแปร closure — ระหว่างรอข้างบนมีก้อนใหม่เข้ามา state จะใหม่กว่าค่าที่ handler นี้จับไว้
+                    const emb = embeddingsRef.current;
+                    if (Object.keys(emb).length === 0) {
+                        setVisualBusy(false); setVisualMsg("");
+                        return alert(embLoadErrorRef.current
+                            ? "โหลดดัชนีรูปจาก cloud ไม่สำเร็จ (" + embLoadErrorRef.current + ") — กด 'ลองใหม่' ที่ข้อความแจ้งเตือนด้านบนแล้วค้นหาอีกครั้ง"
+                            : "ยังไม่มีดัชนีรูปในระบบ — กดปุ่ม 'สร้าง/อัปเดตดัชนีรูป' หนึ่งครั้งเพื่อประมวลผลรูปที่มีอยู่ก่อน");
+                    }
+                    setVisualMsg("กำลังวิเคราะห์รูป...");
                     const model = await loadVisionModel();
                     const img = await fileToImageEl(file);
                     const q = await embedImageEl(model, img);
                     const qCenter = await embedImageEl(model, centerCropCanvas(img)); // เวกเตอร์กลางภาพของรูปที่ถ่าย — เทียบแบบตัดพื้นหลังออก
                     const qHist = colorHistFromImage(img); // ลายเซ็นสีของรูปที่ถ่าย
                     // ขั้นที่ 1: คะแนนภาพรวมอย่างเดียวก่อน (เร็ว ทำในเครื่องล้วน ๆ) — ยังไม่แตะ OCR
-                    const scored = Object.keys(embeddings).map(p => {
+                    const scored = Object.keys(emb).map(p => {
                         let posScore = -1, bestFileId = null, bestItem = null, colorSim = null;
-                        embeddings[p].forEach(it => {
+                        emb[p].forEach(it => {
                             // เทียบทุกคู่ระหว่าง (เต็มภาพ, กลางภาพ) ของรูปค้นหากับของรูปดัชนี แล้วเอาคู่ที่ดีที่สุด —
                             // คู่กลางภาพ-กลางภาพช่วยเคสที่ฝั่งใดฝั่งหนึ่ง (หรือทั้งคู่) มีพื้นหลังรก ๆ ติดมาเยอะ
                             let s = cosineSim(q, it.vector);
@@ -1183,13 +1234,13 @@
                     // และพาร์ทนั้นมีตัวหนังสือในดัชนีให้เทียบ (ข) รูปที่ถ่ายดูมีตัวหนังสือจริง (เช็คในเครื่อง ~10ms) — ไม่เข้าเงื่อนไขก็ข้าม ไม่เสียเวลารอ backend
                     const ocrWorthIt = scored.some(r =>
                         r.base >= VS_TUNE.minScore - VS_TUNE.ocrWeight &&
-                        embeddings[r.partNo].some(it => it.tokens && it.tokens.size > 0));
+                        emb[r.partNo].some(it => it.tokens && it.tokens.size > 0));
                     if (ocrWorthIt && mightContainText(img)) {
                         setVisualMsg("กำลังอ่านตัวหนังสือในรูป...");
                         const queryTokens = ocrTokens(await ocrImageB64(apiUrl, dataUrl.split(',')[1]));
                         if (queryTokens.size > 0) scored.forEach(r => {
                             // โบนัสจากตัวหนังสือ/label ตรงกัน — ช่วยแยกพาร์ทที่หน้าตาเหมือนกันแต่พิมพ์เบอร์/ยี่ห้อต่างกัน
-                            r.textSim = Math.max(0, ...embeddings[r.partNo].map(it => ocrTextSim(queryTokens, it.tokens || new Set())));
+                            r.textSim = Math.max(0, ...emb[r.partNo].map(it => ocrTextSim(queryTokens, it.tokens || new Set())));
                             r.score = Math.min(1, r.base + r.textSim * VS_TUNE.ocrWeight);
                         });
                     }
