@@ -25,6 +25,74 @@ function requestDrivePermission() {
   Logger.log("Authorization successful! Drive OCR is ready to use.");
 }
 
+// ===== แหล่งข้อมูลพาร์ทแยกแผนก (Department Part Source) =====
+// ชีทที่ขึ้นต้นด้วย "DEPT_" ไม่ใช่ BOM ของสินค้า แต่เป็นรายการพาร์ทของแผนกผลิต (เช่น DEPT_Stamping)
+// แยกออกจาก BOM เดิมคนละก้อน เพื่อไม่ให้ไปโผล่ในการระเบิด BOM/เทียบรุ่นของหน้า MRP
+// แต่ frontend เอาไปรวมในหน้า "ค้นหาพาร์ท" ได้ (มีตัวกรองแยกแหล่ง)
+var DEPT_SHEET_PREFIX = "DEPT_";
+var SHEET_CONFIG_NAME = "SheetConfig";
+
+// ชีทของระบบ ไม่ใช่ BOM — ห้ามส่งกลับไปเป็นข้อมูล BOM
+var SYSTEM_SHEETS = ["Inventory", "Transactions", "Users", "PartImages", "NegativeExamples", SHEET_CONFIG_NAME];
+
+/**
+ * แปลงค่าคอลัมน์ใน SheetConfig เป็น index แบบนับจาก 0 (A = 0)
+ * รับได้ทั้งตัวอักษรคอลัมน์ ("D") และตัวเลข index ("3") เพื่อให้คนกรอกในชีทได้ตามถนัด
+ * คืน -1 ถ้าค่าว่าง/อ่านไม่ออก
+ */
+function colIndex_(v) {
+  var s = String(v == null ? "" : v).trim();
+  if (!s) return -1;
+  if (/^[0-9]+$/.test(s)) return parseInt(s, 10);
+  if (/^[A-Za-z]+$/.test(s)) {
+    var n = 0;
+    var up = s.toUpperCase();
+    for (var i = 0; i < up.length; i++) n = n * 26 + (up.charCodeAt(i) - 64);
+    return n - 1;
+  }
+  return -1;
+}
+
+/**
+ * อ่านผังคอลัมน์ของแต่ละแผนกจากชีท SheetConfig
+ * หัวตาราง: Sheet | Label | PartNoCol | NameCol | ModelCol | TypeCol | Extras
+ * Extras เขียนเป็น "F:Spec,G:ขนาด,H:Step" (คอลัมน์:ชื่อที่จะโชว์ คั่นด้วย comma)
+ * คืน { "Stamping": { label, pNoCol, nameCol, modelCol, typeCol, extras:[{col,label}] } }
+ * ไม่มีชีทนี้ = คืน {} แล้วให้ frontend ใช้ผังเริ่มต้นแทน
+ */
+function readDeptConfig_(ss) {
+  var cfgSheet = ss.getSheetByName(SHEET_CONFIG_NAME);
+  var config = {};
+  if (!cfgSheet || cfgSheet.getLastRow() < 2) return config;
+
+  var rows = cfgSheet.getDataRange().getValues();
+  for (var i = 1; i < rows.length; i++) {
+    var sheetName = String(rows[i][0] || "").trim();
+    if (!sheetName) continue;
+    // รับได้ทั้ง "DEPT_Stamping" และ "Stamping" — เก็บ key เป็นชื่อที่ตัด prefix ออกแล้ว
+    var deptName = sheetName.indexOf(DEPT_SHEET_PREFIX) === 0 ? sheetName.substring(DEPT_SHEET_PREFIX.length) : sheetName;
+
+    var extras = [];
+    String(rows[i][6] || "").split(",").forEach(function (pair) {
+      var parts = pair.split(":");
+      if (parts.length < 2) return;
+      var col = colIndex_(parts[0]);
+      var label = parts.slice(1).join(":").trim();
+      if (col >= 0 && label) extras.push({ col: col, label: label });
+    });
+
+    config[deptName] = {
+      label: String(rows[i][1] || deptName).trim(),
+      pNoCol: colIndex_(rows[i][2]),
+      nameCol: colIndex_(rows[i][3]),
+      modelCol: colIndex_(rows[i][4]),
+      typeCol: colIndex_(rows[i][5]),
+      extras: extras
+    };
+  }
+  return config;
+}
+
 /**
  * คืนโฟลเดอร์ Drive สำหรับเก็บรูป BOM (สร้างครั้งแรกอัตโนมัติ แล้วจำ ID ไว้ใน Script Properties)
  */
@@ -61,19 +129,29 @@ function doGet(e) {
       })).setMimeType(ContentService.MimeType.JSON);
     }
     
+    // BOM ของสินค้า (ชีทละ 1 รุ่น) กับรายการพาร์ทแยกแผนก (ชีทขึ้นต้นด้วย DEPT_) แยกกันคนละก้อน
+    // depts ไม่เข้าไปปนใน data เพราะหน้า MRP เอา key ของ data ไป match เป็นชื่อรุ่นสินค้าโดยตรง
     if (action == "getBOM") {
       var allSheets = ss.getSheets();
       var bomData = {};
-      var systemSheets = ["Inventory", "Transactions", "Users", "PartImages"];
-      
+      var deptData = {};
+
       for (var i = 0; i < allSheets.length; i++) {
         var sheet = allSheets[i];
         var name = sheet.getName();
-        if (systemSheets.indexOf(name) === -1) {
+        if (SYSTEM_SHEETS.indexOf(name) !== -1) continue;
+
+        if (name.indexOf(DEPT_SHEET_PREFIX) === 0) {
+          deptData[name.substring(DEPT_SHEET_PREFIX.length)] = sheet.getDataRange().getValues();
+        } else {
           bomData[name] = sheet.getDataRange().getValues();
         }
       }
-      return ContentService.createTextOutput(JSON.stringify({ data: bomData })).setMimeType(ContentService.MimeType.JSON);
+      return ContentService.createTextOutput(JSON.stringify({
+        data: bomData,
+        depts: deptData,
+        deptConfig: readDeptConfig_(ss)
+      })).setMimeType(ContentService.MimeType.JSON);
     }
 
     // พาร์ทเดียวกันมีได้หลายรูป/หลายมุม: หลายแถวใน PartImages แชร์ PartNo เดียวกันได้ -> คืนเป็น partNo -> [รูป, ...]
@@ -536,6 +614,69 @@ function doPost(e) {
         }
       }
       return ContentService.createTextOutput(JSON.stringify({ status: "success" })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // 3.15 นำเข้ารายการพาร์ทของแผนก (เช่น Stamping) เป็นชีท DEPT_<ชื่อแผนก> + เขียนผังคอลัมน์ลง SheetConfig
+    // เขียนทับทั้งชีทเสมอ (ล้างของเดิมก่อน) เพื่อให้ import ซ้ำได้โดยข้อมูลไม่ซ้อนกัน
+    // body: { deptName, header: [...], rows: [[...], ...], config: { label, pNoCol, nameCol, modelCol, typeCol, extras } }
+    else if (body.action === "import_dept_sheet") {
+      var deptName = String(body.deptName || "").trim();
+      if (!deptName) throw new Error("Missing deptName");
+      if (deptName.indexOf(DEPT_SHEET_PREFIX) === 0) deptName = deptName.substring(DEPT_SHEET_PREFIX.length);
+
+      var deptHeader = body.header || [];
+      var deptRows = body.rows || [];
+      if (!deptHeader.length) throw new Error("Missing header");
+
+      var deptSheetName = DEPT_SHEET_PREFIX + deptName;
+      var deptSheet = ss.getSheetByName(deptSheetName);
+      if (!deptSheet) deptSheet = ss.insertSheet(deptSheetName);
+      else deptSheet.clear();
+
+      // บังคับให้ทุกแถวยาวเท่าหัวตาราง — setValues ต้องการสี่เหลี่ยมผืนผ้าเป๊ะ ๆ
+      var deptWidth = deptHeader.length;
+      var deptTable = [deptHeader];
+      for (var di = 0; di < deptRows.length; di++) {
+        var srcRow = deptRows[di] || [];
+        var outRow = [];
+        for (var dj = 0; dj < deptWidth; dj++) outRow.push(srcRow[dj] == null ? "" : srcRow[dj]);
+        deptTable.push(outRow);
+      }
+      deptSheet.getRange(1, 1, deptTable.length, deptWidth).setValues(deptTable);
+      deptSheet.getRange(1, 1, 1, deptWidth).setFontWeight("bold");
+      deptSheet.setFrozenRows(1);
+
+      // อัปเดตผังคอลัมน์ใน SheetConfig (มีแถวของแผนกนี้อยู่แล้วให้เขียนทับ ไม่งั้นต่อท้าย)
+      if (body.config) {
+        var cfg = body.config;
+        var cfgSheet = ss.getSheetByName(SHEET_CONFIG_NAME);
+        if (!cfgSheet) {
+          cfgSheet = ss.insertSheet(SHEET_CONFIG_NAME);
+          cfgSheet.appendRow(["Sheet", "Label", "PartNoCol", "NameCol", "ModelCol", "TypeCol", "Extras"]);
+          cfgSheet.getRange(1, 1, 1, 7).setFontWeight("bold");
+          cfgSheet.setFrozenRows(1);
+        }
+        var cfgRow = [
+          deptSheetName,
+          String(cfg.label || deptName),
+          String(cfg.pNoCol == null ? "" : cfg.pNoCol),
+          String(cfg.nameCol == null ? "" : cfg.nameCol),
+          String(cfg.modelCol == null ? "" : cfg.modelCol),
+          String(cfg.typeCol == null ? "" : cfg.typeCol),
+          String(cfg.extras || "")
+        ];
+        var cfgData = cfgSheet.getDataRange().getValues();
+        var cfgRowIndex = 0;
+        for (var ci = 1; ci < cfgData.length; ci++) {
+          if (String(cfgData[ci][0]).trim() === deptSheetName) { cfgRowIndex = ci + 1; break; }
+        }
+        if (cfgRowIndex) cfgSheet.getRange(cfgRowIndex, 1, 1, 7).setValues([cfgRow]);
+        else cfgSheet.appendRow(cfgRow);
+      }
+
+      return ContentService.createTextOutput(JSON.stringify({
+        status: "success", sheet: deptSheetName, rows: deptRows.length
+      })).setMimeType(ContentService.MimeType.JSON);
     }
 
     // 4. DELETE ITEM
