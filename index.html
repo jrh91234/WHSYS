@@ -51,6 +51,8 @@
         const STORAGE_KEY_SESSION = "nlc_erp_session"; 
         const STORAGE_KEY_BOM_DATA = "nlc_erp_bom_data";
         const STORAGE_KEY_BOM_VERSION = "nlc_erp_bom_version";
+        const STORAGE_KEY_DEPT_DATA = "nlc_erp_dept_data";
+        const STORAGE_KEY_DEPT_CONFIG = "nlc_erp_dept_config";
         const STORAGE_KEY_PART_IMAGES = "nlc_erp_part_images";
         const STORAGE_KEY_PART_CART = "nlc_erp_part_cart";
 
@@ -415,6 +417,71 @@
         ];
 
         const formatNum = (n) => typeof n === 'number' ? n.toLocaleString() : "0";
+
+        // Part No ที่พิมพ์มาจาก Excel มักมีขยะที่มองไม่เห็นติดมา: non-breaking space ( ),
+        // zero-width space, ขึ้นบรรทัดใหม่ท้ายเซลล์ — .trim() เฉย ๆ ไม่กินตัวพวกนี้ ทำให้พิมพ์เลขที่ถูกต้องแล้วหาไม่เจอ
+        // cleanPartNo = ใช้ "แสดงผล/เก็บ" (คงตัวพิมพ์เล็กใหญ่เดิม), normPartNo = ใช้ "เทียบ/จับคู่" (ตัดขยะ + uppercase)
+        const cleanPartNo = (v) => String(v == null ? "" : v)
+            .replace(/[\u00A0\u200B-\u200D\uFEFF]/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+        const normPartNo = (v) => cleanPartNo(v).replace(/\s/g, "").toUpperCase();
+
+        // ข้อความหลายบรรทัดในเซลล์ Excel (เช่น Tooling No. หลายตัว) → บรรทัดเดียวคั่นด้วย comma
+        const cleanCell = (v) => String(v == null ? "" : v)
+            .replace(/[\u00A0\u200B-\u200D\uFEFF]/g, " ")
+            .replace(/\s*\n\s*/g, ", ")
+            .replace(/\s+/g, " ")
+            .trim();
+
+        // ===== แหล่งข้อมูลพาร์ทแยกแผนก =====
+        // ชีท DEPT_<แผนก> ในสเปรดชีตเดียวกัน ไม่ใช่ BOM ของสินค้า (ไม่มี Qty/Unit ไม่เข้าการระเบิด BOM ในหน้า MRP)
+        // แต่ค้นหารวมกับ BOM ได้ในหน้า "ค้นหาพาร์ท" — ผังคอลัมน์ของแต่ละแผนกมาจากชีท SheetConfig
+        const DEPT_SHEET_PREFIX = "DEPT_";
+        // ผังสำรอง ใช้เมื่อยังไม่มีแถวของแผนกนั้นใน SheetConfig (ตรงกับไฟล์ Part List ของแผนก Stamping)
+        const DEPT_COLS_DEFAULT = {
+            pNoCol: 3, nameCol: 2, modelCol: 1, typeCol: 9,
+            extras: [
+                { col: 5, label: "Spec" },
+                { col: 6, label: "ขนาด (หนา*กว้าง*ยาว)" },
+                { col: 7, label: "Step" },
+                { col: 8, label: "Tooling No." },
+                { col: 10, label: "เครื่อง/Machine" }
+            ]
+        };
+        // รวมฟิลด์เสริมของแผนกเป็นข้อความบรรทัดเดียว ใช้ตอน export Excel/PDF
+        const extrasText = (extras) => (extras || []).map(e => `${e.label}: ${e.value}`).join(" | ");
+
+        const deptColsOf = (deptConfig, deptName) => {
+            const cfg = (deptConfig || {})[deptName];
+            if (!cfg || !(cfg.pNoCol >= 0)) return { label: deptName, ...DEPT_COLS_DEFAULT };
+            return { label: cfg.label || deptName, ...cfg, extras: cfg.extras || [] };
+        };
+
+        // แปลงชีทของแผนกเป็นรายการพาร์ทหน้าตาเดียวกับผลค้นหา BOM (บวกฟิลด์ extras ของงานแผนกนั้น)
+        const deptPartRows = (deptData, deptConfig) => {
+            const out = [];
+            Object.keys(deptData || {}).forEach(deptName => {
+                const cols = deptColsOf(deptConfig, deptName);
+                (deptData[deptName] || []).slice(1).forEach(row => {
+                    const partNo = cleanPartNo(row[cols.pNoCol]);
+                    const name = cleanCell(row[cols.nameCol]);
+                    if (!partNo && !name) return;
+                    out.push({
+                        partNo, name,
+                        model: cleanCell(row[cols.modelCol]),
+                        qty: null,                                   // ไม่ใช่ BOM สินค้า จึงไม่มี Qty/Unit
+                        type: cleanCell(row[cols.typeCol]) || "-",
+                        sourceKey: deptName,
+                        source: cols.label,
+                        extras: (cols.extras || [])
+                            .map(e => ({ label: e.label, value: cleanCell(row[e.col]) }))
+                            .filter(e => e.value)
+                    });
+                });
+            });
+            return out;
+        };
         const getStorage = (key, def) => {
             const saved = localStorage.getItem(key);
             try { return saved ? JSON.parse(saved) : def; } catch(e) { return def; }
@@ -548,6 +615,8 @@
             const [users, setUsers] = useState(() => getStorage(STORAGE_KEY_USERS, INITIAL_USERS));
             const [bomData, setBomData] = useState(() => getStorage(STORAGE_KEY_BOM_DATA, {}));
             const [bomVersion, setBomVersion] = useState(() => getStorage(STORAGE_KEY_BOM_VERSION, 0));
+            const [deptData, setDeptData] = useState(() => getStorage(STORAGE_KEY_DEPT_DATA, {}));
+            const [deptConfig, setDeptConfig] = useState(() => getStorage(STORAGE_KEY_DEPT_CONFIG, {}));
             const [partImages, setPartImages] = useState(() => normalizePartImages(getStorage(STORAGE_KEY_PART_IMAGES, {})));
             const [apiUrl, setApiUrl] = useState(() => localStorage.getItem(STORAGE_KEY_API_URL) || DEFAULT_API_URL);
             
@@ -561,7 +630,9 @@
                 setStorage(STORAGE_KEY_BOM_DATA, bomData);
                 setStorage(STORAGE_KEY_BOM_VERSION, bomVersion);
                 setStorage(STORAGE_KEY_PART_IMAGES, partImages);
-            }, [inventory, transactions, users, bomData, bomVersion, partImages]);
+                setStorage(STORAGE_KEY_DEPT_DATA, deptData);
+                setStorage(STORAGE_KEY_DEPT_CONFIG, deptConfig);
+            }, [inventory, transactions, users, bomData, bomVersion, partImages, deptData, deptConfig]);
 
             useEffect(() => {
                 if (currentUser) { setStorage(STORAGE_KEY_SESSION, currentUser); }
@@ -608,15 +679,21 @@
                     const sheetData = jsonBOM.data || jsonBOM;
                     const version = jsonBOM.version || Date.now();
                     
+                    // แยกชีทของแผนก (DEPT_*) ออกจาก BOM สินค้า — backend รุ่นใหม่แยกมาให้แล้วใน jsonBOM.depts
+                    // แต่ยังแยกซ้ำฝั่งนี้ด้วย เผื่อ backend ยังไม่ได้ deploy ใหม่ ชีท DEPT_* จะได้ไม่หลุดไปเป็น "รุ่นสินค้า" ในหน้า MRP
                     const filteredBOM = {};
+                    const fallbackDepts = {};
                     Object.keys(sheetData).forEach(key => {
-                        if (key.toLowerCase() !== 'data' && key !== 'version') {
-                            filteredBOM[key] = sheetData[key];
-                        }
+                        if (key.toLowerCase() === 'data' || key === 'version' || key === 'depts' || key === 'deptConfig') return;
+                        if (key === 'SheetConfig' || key === 'NegativeExamples') return; // ชีทระบบ ไม่ใช่ BOM
+                        if (key.indexOf(DEPT_SHEET_PREFIX) === 0) fallbackDepts[key.substring(DEPT_SHEET_PREFIX.length)] = sheetData[key];
+                        else filteredBOM[key] = sheetData[key];
                     });
-                    
+
                     setBomData(filteredBOM);
                     setBomVersion(version);
+                    setDeptData(jsonBOM.depts && Object.keys(jsonBOM.depts).length ? jsonBOM.depts : fallbackDepts);
+                    if (jsonBOM.deptConfig) setDeptConfig(jsonBOM.deptConfig);
 
                     try {
                         const resImg = await fetch(apiUrl + "?action=getImages&t=" + Date.now());
@@ -755,8 +832,8 @@
                         {currentView === 'dashboard' && <DashboardView inventory={inventory} transactions={transactions} toInventory={()=>setCurrentView('inventory')} />}
                         {currentView === 'inventory' && <InventoryView inventory={inventory} setInventory={setInventory} addTransaction={addTransaction} deleteItem={handleDeleteItem} apiUrl={apiUrl} currentUser={currentUser} setTransactions={setTransactions} partImages={partImages} setPartImages={setPartImages} />}
                         {currentView === 'mrp' && <AdvancedMRPView inventory={inventory} addTransaction={addTransaction} bomData={bomData} setBomData={setBomData} apiUrl={apiUrl} partImages={partImages} setPartImages={setPartImages} currentUser={currentUser} />}
-                        {currentView === 'searchpart' && <SearchPartView inventory={inventory} bomData={bomData} apiUrl={apiUrl} partImages={partImages} setPartImages={setPartImages} currentUser={currentUser} />}
-                        {currentView === 'visualsearch' && <VisualSearchView inventory={inventory} bomData={bomData} apiUrl={apiUrl} partImages={partImages} setPartImages={setPartImages} currentUser={currentUser} />}
+                        {currentView === 'searchpart' && <SearchPartView inventory={inventory} bomData={bomData} deptData={deptData} deptConfig={deptConfig} apiUrl={apiUrl} partImages={partImages} setPartImages={setPartImages} currentUser={currentUser} />}
+                        {currentView === 'visualsearch' && <VisualSearchView inventory={inventory} bomData={bomData} deptData={deptData} deptConfig={deptConfig} apiUrl={apiUrl} partImages={partImages} setPartImages={setPartImages} currentUser={currentUser} />}
                         {currentView === 'stockcount' && <StockCountView inventory={inventory} setInventory={setInventory} addTransaction={addTransaction} currentUser={currentUser} apiUrl={apiUrl} bomData={bomData} />}
                         {currentView === 'history' && <HistoryView transactions={transactions} />}
                         {currentView === 'settings' && <SettingsView apiUrl={apiUrl} setApiUrl={setApiUrl} users={users} currentUser={currentUser} onSaveUser={handleSaveUser} onDeleteUser={handleDeleteUser} />}
@@ -820,46 +897,93 @@
         };
 
         // ===== ค้นหาพาร์ท (Search Part) — แยกออกมาเป็นฟังก์ชันเดี่ยว ไม่ฝังลึกอยู่ใน AdvancedMRPView =====
-        const usePartSearch = (bomData, sheetNames = [], { pNoCol, nameCol, qtyCol, typeCol } = {}) => {
+        // ค้นทั้ง BOM ของสินค้า และรายการพาร์ทแยกแผนก (DEPT_*) ในครั้งเดียว แล้วติดป้ายบอกแหล่งที่มาให้แต่ละรายการ
+        // ทั้งสองแหล่งอยู่กันคนละก้อน ไม่ถูกรวมเข้าหากัน — พาร์ทเดียวกันที่มีทั้งสองแหล่งจะขึ้นเป็นคนละบรรทัด
+        const SOURCE_BOM = "BOM";
+        const usePartSearch = (bomData, sheetNames = [], { pNoCol, nameCol, qtyCol, typeCol } = {}, deptData = {}, deptConfig = {}) => {
             const [searchPartQuery, setSearchPartQuery] = useState("");
             const [partSearchResults, setPartSearchResults] = useState(null);
+            const [sourceFilter, setSourceFilter] = useState("ALL");
+
+            // รวมทุกแหล่งเป็นดัชนีเดียวไว้ก่อน (คำนวณใหม่เฉพาะตอนข้อมูลเปลี่ยน ไม่ใช่ทุกครั้งที่กดค้นหา)
+            const partIndex = useMemo(() => {
+                const items = [];
+                sheetNames.forEach(sheet => {
+                    (bomData?.[sheet] || []).slice(1).forEach(row => {
+                        const partNo = cleanPartNo(row[pNoCol]);
+                        const name = cleanCell(row[nameCol]);
+                        if (!partNo && !name) return;
+                        items.push({
+                            partNo, name,
+                            model: sheet,
+                            qty: parseFloat(row[qtyCol]) || 0,
+                            type: row[typeCol] || "-",
+                            sourceKey: SOURCE_BOM,
+                            source: SOURCE_BOM,
+                            extras: []
+                        });
+                    });
+                });
+                deptPartRows(deptData, deptConfig).forEach(it => items.push(it));
+
+                // เตรียมข้อความสำหรับค้นไว้ล่วงหน้า — ของแผนกให้ค้นจาก Tooling No./Process/ขนาด ได้ด้วย
+                // (ช่างมักจำเป็นเลขแม่พิมพ์มากกว่าเลขพาร์ท)
+                return items.map(it => ({
+                    ...it,
+                    _key: normPartNo(it.partNo),
+                    _text: [it.name, it.model, it.type, ...(it.extras || []).map(e => e.value)].join(" ").toLowerCase()
+                }));
+            }, [bomData, sheetNames, deptData, deptConfig, pNoCol, nameCol, qtyCol, typeCol]);
+
+            // พาร์ทไหนมีอยู่ในแหล่งใดบ้าง — ใช้ติดป้าย "มีข้อมูลของแผนก ..." บนผลลัพธ์ฝั่ง BOM และกลับกัน
+            const sourcesOfPart = useMemo(() => {
+                const map = {};
+                partIndex.forEach(it => {
+                    if (!it._key) return;
+                    if (!map[it._key]) map[it._key] = [];
+                    if (!map[it._key].includes(it.source)) map[it._key].push(it.source);
+                });
+                return map;
+            }, [partIndex]);
+
+            // รายชื่อแหล่งทั้งหมดที่มีข้อมูลจริง ใช้สร้างปุ่มกรอง (ไม่มีแผนกเลย = ไม่ต้องโชว์ปุ่ม)
+            const availableSources = useMemo(() => {
+                const seen = [];
+                partIndex.forEach(it => { if (!seen.includes(it.source)) seen.push(it.source); });
+                return seen;
+            }, [partIndex]);
 
             const handlePartSearch = () => {
                 if (!searchPartQuery.trim()) return alert("กรุณาพิมพ์คำค้นหา");
-                if (!bomData) return;
 
-                const results = [];
-                const term = searchPartQuery.toLowerCase();
+                const term = searchPartQuery.trim().toLowerCase();
+                const keyTerm = normPartNo(searchPartQuery);
 
-                sheetNames.forEach(sheet => {
-                    const rows = bomData[sheet];
-                    if (!rows) return;
-
-                    rows.slice(1).forEach((row) => {
-                        const pNo = String(row[pNoCol] || "").trim();
-                        const name = String(row[nameCol] || "").trim();
-
-                        if (pNo.toLowerCase().includes(term) || name.toLowerCase().includes(term)) {
-                            results.push({
-                                partNo: pNo,
-                                name: name,
-                                model: sheet,
-                                qty: parseFloat(row[qtyCol]) || 0,
-                                type: row[typeCol] || "-"
-                            });
-                        }
-                    });
-                });
+                const results = partIndex.filter(it =>
+                    (keyTerm && it._key.includes(keyTerm)) || it._text.includes(term)
+                );
 
                 setPartSearchResults(results);
             };
 
-            return { searchPartQuery, setSearchPartQuery, partSearchResults, setPartSearchResults, handlePartSearch };
+            // ผลลัพธ์หลังกรองตามแหล่ง — เก็บผลดิบไว้เพื่อสลับตัวกรองได้โดยไม่ต้องค้นใหม่
+            const filteredResults = useMemo(() => {
+                if (!partSearchResults) return null;
+                if (sourceFilter === "ALL") return partSearchResults;
+                return partSearchResults.filter(it => it.source === sourceFilter);
+            }, [partSearchResults, sourceFilter]);
+
+            return {
+                searchPartQuery, setSearchPartQuery, partSearchResults: filteredResults, rawResults: partSearchResults,
+                setPartSearchResults, handlePartSearch,
+                sourceFilter, setSourceFilter, availableSources, sourcesOfPart
+            };
         };
 
         // ===== ตะกร้าพาร์ท — เก็บพาร์ทที่เลือกจากผลค้นหาไว้รวมกัน แล้ว export เป็น Excel ทีเดียว =====
         // เก็บใน localStorage เพื่อให้ตะกร้าคงอยู่ข้ามการค้นหาหลายรอบ (พาร์ทเดียวกันคนละโมเดลนับเป็นคนละรายการ)
-        const cartKeyOf = (it) => `${String(it.partNo || "").trim()}||${it.model || ""}`;
+        // key รวม "แหล่ง" ด้วย เพราะพาร์ทเดียวกันมีได้ทั้งฝั่ง BOM และฝั่งแผนก (คนละข้อมูล ต้องหยิบใส่ตะกร้าแยกกันได้)
+        const cartKeyOf = (it) => `${normPartNo(it.partNo)}||${it.model || ""}||${it.source || SOURCE_BOM}`;
         const usePartCart = () => {
             const [cart, setCart] = useState(() => getStorage(STORAGE_KEY_PART_CART, []));
             useEffect(() => { setStorage(STORAGE_KEY_PART_CART, cart); }, [cart]);
@@ -869,11 +993,13 @@
                 const k = cartKeyOf(it);
                 if (prev.some(c => cartKeyOf(c) === k)) return prev.filter(c => cartKeyOf(c) !== k);
                 return [...prev, {
-                    partNo: String(it.partNo || "").trim(),
+                    partNo: cleanPartNo(it.partNo),
                     name: it.name || "",
                     model: it.model || "",
-                    qtyPerUnit: it.qty || 0,
+                    qtyPerUnit: it.qty,
                     type: it.type || "-",
+                    source: it.source || SOURCE_BOM,
+                    extras: it.extras || [],
                     qty: 1
                 }];
             });
@@ -1446,7 +1572,19 @@
                 }
             };
 
-            const imagesFor = (partNo) => partImages[partNo] || [];
+            // ดัชนีสำรองแบบ normalize — รูปเก่าถูกเก็บด้วย Part No ดิบจากชีท (อาจมี nbsp/ช่องว่างติดมา)
+            // ส่วนหน้าจอตอนนี้ส่ง Part No ที่ล้างแล้วเข้ามา ถ้าเทียบตรง ๆ ไม่เจอให้ถอยมาเทียบแบบ normalize
+            const normImageIndex = useMemo(() => {
+                const idx = {};
+                Object.keys(partImages || {}).forEach(k => {
+                    const nk = normPartNo(k);
+                    if (!nk) return;
+                    idx[nk] = (idx[nk] || []).concat(partImages[k] || []);
+                });
+                return idx;
+            }, [partImages]);
+
+            const imagesFor = (partNo) => partImages[partNo] || normImageIndex[normPartNo(partNo)] || [];
 
             // หา src ของรูปเดี่ยว ๆ ตาม fileId (รูปที่เพิ่งอัป > รูปจาก Drive)
             const imgSrcForFile = (fileId, size = 400) => {
@@ -2136,10 +2274,25 @@
         // ตำแหน่งคอลัมน์มาตรฐานของชีต BOM (Part No / Name / Qty / Type) — ตรงกับค่าเริ่มต้นในหน้าแผนผลิต (MRP)
         const BOM_COLS = { pNoCol: 2, nameCol: 3, qtyCol: 4, typeCol: 6 };
 
-        const SearchPartView = ({ inventory, bomData, apiUrl, partImages = {}, setPartImages, currentUser }) => {
+        // สีป้ายบอกแหล่งที่มาของพาร์ท — BOM สินค้า vs รายการพาร์ทของแผนก
+        const sourceBadgeClass = (source) => source === SOURCE_BOM
+            ? "bg-blue-50 text-blue-600 border-blue-200"
+            : "bg-amber-50 text-amber-700 border-amber-200";
+
+        const SourceBadge = ({ source }) => (
+            <span className={`inline-flex items-center gap-1 border rounded-md px-1.5 py-0.5 text-[10px] font-bold whitespace-nowrap ${sourceBadgeClass(source)}`}>
+                <i className={`fa-solid ${source === SOURCE_BOM ? 'fa-sitemap' : 'fa-hammer'} text-[9px]`}></i>{source}
+            </span>
+        );
+
+        const SearchPartView = ({ inventory, bomData, deptData = {}, deptConfig = {}, apiUrl, partImages = {}, setPartImages, currentUser }) => {
             const sheetNames = useMemo(() => Object.keys(bomData || {}), [bomData]);
-            const { searchPartQuery, setSearchPartQuery, partSearchResults, handlePartSearch } =
-                usePartSearch(bomData, sheetNames, BOM_COLS);
+            const {
+                searchPartQuery, setSearchPartQuery, partSearchResults, rawResults, handlePartSearch,
+                sourceFilter, setSourceFilter, availableSources, sourcesOfPart
+            } = usePartSearch(bomData, sheetNames, BOM_COLS, deptData, deptConfig);
+            const [expandedRows, setExpandedRows] = useState({});
+            const toggleRow = (key) => setExpandedRows(prev => ({ ...prev, [key]: !prev[key] }));
             const {
                 imgFileRef, lightbox, setLightbox, namePopup, setNamePopup,
                 pickImageFor, handleImageFile, handleDeleteImage,
@@ -2153,9 +2306,11 @@
                 const data = cart.map(it => ({
                     "Part No": it.partNo,
                     "Name": it.name,
+                    "แหล่ง": it.source || SOURCE_BOM,
                     "Used In (Model)": it.model,
-                    "Qty/Unit": it.qtyPerUnit,
+                    "Qty/Unit": it.qtyPerUnit == null ? "-" : it.qtyPerUnit,
                     "Type": it.type,
+                    "รายละเอียด": extrasText(it.extras),
                     "จำนวน": parseFloat(it.qty) || 0,
                     "รูป (ลิงก์)": driveViewLink(partImages, it.partNo)
                 }));
@@ -2164,15 +2319,25 @@
 
             const exportSearchExcel = () => {
                 if (!partSearchResults || partSearchResults.length === 0) return alert("ไม่มีผลการค้นหาให้ export");
-                const data = partSearchResults.map(it => ({ "Part No": it.partNo, "Name": it.name, "Used In (Model)": it.model, "Qty": it.qty, "Type": it.type, "รูป (ลิงก์)": driveViewLink(partImages, it.partNo) }));
+                const data = partSearchResults.map(it => ({
+                    "Part No": it.partNo,
+                    "Name": it.name,
+                    "แหล่ง": it.source,
+                    "Used In (Model)": it.model,
+                    "Qty": it.qty == null ? "-" : it.qty,
+                    "Type": it.type,
+                    "รายละเอียด": extrasText(it.extras),
+                    "รูป (ลิงก์)": driveViewLink(partImages, it.partNo)
+                }));
                 exportToExcel(data, "Part_Search", "Search");
             };
             const exportSearchPDF = () => {
                 if (!partSearchResults || partSearchResults.length === 0) return alert("ไม่มีผลการค้นหาให้ export");
-                const headers = ["รูป", "Part No", "Name", "Used In (Model)", "Qty", "Type"];
+                const headers = ["รูป", "Part No", "Name", "แหล่ง", "Used In (Model)", "Qty", "Type", "รายละเอียด"];
                 const rows = partSearchResults.map(it => {
                     const fid = partFileId(partImages, it.partNo);
-                    return [fid ? { imgId: fid } : "", it.partNo, it.name, it.model, formatNum(it.qty), it.type];
+                    return [fid ? { imgId: fid } : "", it.partNo, it.name, it.source, it.model,
+                        it.qty == null ? "-" : formatNum(it.qty), it.type, extrasText(it.extras)];
                 });
                 exportTableToPDF("Part Search: " + (searchPartQuery || ""), headers, rows);
             };
@@ -2212,6 +2377,20 @@
                             </button>
                         </div>
 
+                        {/* ตัวกรองแหล่งข้อมูล — โผล่เฉพาะตอนมีรายการพาร์ทของแผนกอยู่จริง (มีแต่ BOM อย่างเดียวก็ไม่ต้องมีให้เลือก) */}
+                        {availableSources.length > 1 && (
+                            <div className="flex flex-wrap items-center gap-2 mb-4 -mt-2">
+                                <span className="text-[11px] text-slate-400 font-bold">แหล่งข้อมูล:</span>
+                                {["ALL", ...availableSources].map(src => (
+                                    <button key={src} onClick={() => setSourceFilter(src)}
+                                        className={`px-3 py-1 rounded-full border text-[11px] font-bold transition ${sourceFilter === src ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-500 hover:bg-slate-50'}`}>
+                                        {src === "ALL" ? "ทั้งหมด" : src}
+                                        {rawResults && <span className="ml-1 opacity-60">{src === "ALL" ? rawResults.length : rawResults.filter(r => r.source === src).length}</span>}
+                                    </button>
+                                ))}
+                            </div>
+                        )}
+
                         {partSearchResults && (
                             <div className="overflow-hidden border rounded-xl">
                                 <div className="bg-orange-50 p-3 text-xs font-bold text-orange-800 border-b flex justify-between items-center gap-2">
@@ -2240,10 +2419,16 @@
                                                 <tr><td colSpan="6" className="p-8 text-center text-slate-400">ไม่พบข้อมูล</td></tr>
                                             ) : (
                                                 partSearchResults.map((item, idx) => {
-                                                    const sPartNo = String(item.partNo||"").trim();
+                                                    const sPartNo = cleanPartNo(item.partNo);
                                                     const sThumb = sPartNo ? imgSrcFor(sPartNo) : "";
+                                                    const rowKey = cartKeyOf(item) + "||" + idx;
+                                                    const hasExtras = (item.extras || []).length > 0;
+                                                    const isOpen = !!expandedRows[rowKey];
+                                                    // แหล่งอื่นที่มีพาร์ทเลขเดียวกัน — เช่น พาร์ทใน BOM ที่แผนก Stamping มีข้อมูลแม่พิมพ์อยู่ด้วย
+                                                    const otherSources = (sourcesOfPart[normPartNo(sPartNo)] || []).filter(s => s !== item.source);
                                                     return (
-                                                    <tr key={idx} className="hover:bg-slate-50">
+                                                    <React.Fragment key={rowKey}>
+                                                    <tr className="hover:bg-slate-50">
                                                         <td className="p-2 text-center">
                                                             {sThumb ? (
                                                                 <DriveImg src={sThumb} fileId={coverFileId(sPartNo)} size={400} alt={item.partNo}
@@ -2260,18 +2445,34 @@
                                                                     onClick={() => setNamePopup({ partNo: sPartNo, name: String(item.name||"") })}
                                                                     title="กดเพื่อถ่ายรูป / จัดการรูปพาร์ทนี้"
                                                                     className="w-full text-left p-3 active:bg-emerald-100 hover:bg-emerald-50">
-                                                                    <div className="font-bold text-blue-600">{item.partNo}</div>
+                                                                    <div className="font-bold text-blue-600 flex items-center gap-1.5 flex-wrap">{item.partNo}<SourceBadge source={item.source} /></div>
                                                                     <div className="text-slate-500"><i className="fa-solid fa-camera text-emerald-400 mr-1 text-[10px]"></i>{item.name}</div>
                                                                 </button>
                                                             ) : (
                                                                 <div className="p-3">
-                                                                    <div className="font-bold text-blue-600">{item.partNo}</div>
+                                                                    <div className="font-bold text-blue-600 flex items-center gap-1.5 flex-wrap">{item.partNo}<SourceBadge source={item.source} /></div>
                                                                     <div className="text-slate-500">{item.name}</div>
+                                                                </div>
+                                                            )}
+                                                            {(otherSources.length > 0 || hasExtras) && (
+                                                                <div className="px-3 pb-2 -mt-1 flex flex-wrap items-center gap-2">
+                                                                    {otherSources.map(s => (
+                                                                        <span key={s} className="text-[10px] text-slate-400" title="พาร์ทเลขเดียวกันนี้มีข้อมูลจากอีกแหล่งด้วย — กรองดูได้จากปุ่มด้านบน">
+                                                                            <i className="fa-solid fa-link text-[9px] mr-1"></i>มีใน {s} ด้วย
+                                                                        </span>
+                                                                    ))}
+                                                                    {hasExtras && (
+                                                                        <button type="button" onClick={() => toggleRow(rowKey)}
+                                                                            className="text-[10px] font-bold text-amber-600 hover:text-amber-700">
+                                                                            <i className={`fa-solid ${isOpen ? 'fa-chevron-up' : 'fa-chevron-down'} text-[9px] mr-1`}></i>
+                                                                            {isOpen ? "ซ่อนข้อมูลงานผลิต" : "ดูข้อมูลงานผลิต"}
+                                                                        </button>
+                                                                    )}
                                                                 </div>
                                                             )}
                                                         </td>
                                                         <td className="p-3 font-bold text-slate-700">{item.model}</td>
-                                                        <td className="p-3 text-right">{formatNum(item.qty)}</td>
+                                                        <td className="p-3 text-right">{item.qty == null ? <span className="text-slate-300">—</span> : formatNum(item.qty)}</td>
                                                         <td className="p-3 text-center">{item.type}</td>
                                                         <td className="p-2 text-center">
                                                             <button onClick={() => toggleCart(item)}
@@ -2281,6 +2482,22 @@
                                                             </button>
                                                         </td>
                                                     </tr>
+                                                    {isOpen && hasExtras && (
+                                                        <tr className="bg-amber-50/50">
+                                                            <td></td>
+                                                            <td colSpan="5" className="px-3 pb-3 pt-0">
+                                                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1.5 border-l-2 border-amber-300 pl-3">
+                                                                    {item.extras.map(ex => (
+                                                                        <div key={ex.label} className="flex gap-2 text-[11px]">
+                                                                            <span className="text-slate-400 shrink-0">{ex.label}:</span>
+                                                                            <span className="font-bold text-slate-700 break-words">{ex.value}</span>
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            </td>
+                                                        </tr>
+                                                    )}
+                                                    </React.Fragment>
                                                     );
                                                 })
                                             )}
@@ -2335,11 +2552,11 @@
                                                                 )}
                                                             </td>
                                                             <td className="p-3">
-                                                                <div className="font-bold text-blue-600">{item.partNo}</div>
+                                                                <div className="font-bold text-blue-600 flex items-center gap-1.5 flex-wrap">{item.partNo}<SourceBadge source={item.source || SOURCE_BOM} /></div>
                                                                 <div className="text-slate-500">{item.name}</div>
                                                             </td>
                                                             <td className="p-3 font-bold text-slate-700">{item.model}</td>
-                                                            <td className="p-3 text-right">{formatNum(item.qtyPerUnit)}</td>
+                                                            <td className="p-3 text-right">{item.qtyPerUnit == null ? <span className="text-slate-300">—</span> : formatNum(item.qtyPerUnit)}</td>
                                                             <td className="p-3 text-center">{item.type}</td>
                                                             <td className="p-2 text-center">
                                                                 <input type="number" min="0" value={item.qty}
@@ -2458,19 +2675,24 @@
             );
         };
 
-        const VisualSearchView = ({ inventory, bomData, apiUrl, partImages = {}, setPartImages, currentUser }) => {
-            // แผนที่ Part No -> ชื่อ (จาก inventory + ทุกชีต BOM) สำหรับแสดงผลค้นหาด้วยรูป
+        const VisualSearchView = ({ inventory, bomData, deptData = {}, deptConfig = {}, apiUrl, partImages = {}, setPartImages, currentUser }) => {
+            // แผนที่ Part No -> ชื่อ (จาก inventory + ทุกชีต BOM + รายการพาร์ทของแผนก) สำหรับแสดงผลค้นหาด้วยรูป
+            // ใส่ทั้ง key ดิบและ key แบบ normalize เพราะดัชนีรูปเก่าเก็บด้วย Part No ดิบจากชีท
             const partNameMap = useMemo(() => {
                 const m = {};
-                (inventory || []).forEach(it => { const p = String(it.partNo || "").trim(); if (p && !m[p]) m[p] = it.name || ""; });
+                const put = (p, name) => {
+                    const raw = String(p || "").trim();
+                    if (raw && !m[raw]) m[raw] = name || "";
+                    const norm = normPartNo(p);
+                    if (norm && !m[norm]) m[norm] = name || "";
+                };
+                (inventory || []).forEach(it => put(it.partNo, it.name));
                 Object.keys(bomData || {}).forEach(sh => {
-                    (bomData[sh] || []).slice(1).forEach(row => {
-                        const p = String(row[BOM_COLS.pNoCol] || "").trim();
-                        if (p && !m[p]) m[p] = String(row[BOM_COLS.nameCol] || "");
-                    });
+                    (bomData[sh] || []).slice(1).forEach(row => put(row[BOM_COLS.pNoCol], String(row[BOM_COLS.nameCol] || "")));
                 });
+                deptPartRows(deptData, deptConfig).forEach(it => put(it.partNo, it.name));
                 return m;
-            }, [inventory, bomData]);
+            }, [inventory, bomData, deptData, deptConfig]);
 
             const imgSearchRef = useRef(null);
             const {
