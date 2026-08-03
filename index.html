@@ -482,6 +482,30 @@
             });
             return out;
         };
+        // ===== ตรวจจับชีทแผนกที่ลืมตั้งชื่อขึ้นต้นด้วย DEPT_ =====
+        // ระบบแยกแหล่งด้วยชื่อชีทล้วน ๆ ชีทที่ไม่ขึ้นต้นด้วย DEPT_ จะถูกนับเป็น "รุ่นสินค้า" ทันที
+        // แล้วอ่านด้วยผังของ BOM (C=Part No) ซึ่งคนละช่องกับไฟล์แผนก (D=Part No) — ค้นเลขพาร์ทจึงไม่เจอ
+        // และชื่อชีทจะไปโผล่ปนกับรุ่นสินค้าจริงในหน้า MRP โดยไม่มีใครรู้
+        // ตรงนี้แค่ "เตือน" ไม่เดาแทนผู้ใช้ เพราะถ้าเดาผิดจะไปกระทบการระเบิด BOM ในหน้า MRP
+        const DEPT_HEADER_STRONG = ["tooling", "picture", "รูป", "แม่พิมพ์"];  // BOM ของสินค้าแทบไม่มีคอลัมน์พวกนี้
+        const DEPT_HEADER_WEAK = ["process", "step", "machine", "spec"];
+        const BOM_HEADER_HINTS = ["qty", "quantity", "unit", "จำนวน", "หน่วย"];  // มีคอลัมน์พวกนี้ = BOM สินค้าจริง
+
+        const looksLikeDeptSheet = (rows) => {
+            const header = (rows || [])[0];
+            if (!Array.isArray(header)) return false;
+            const cells = header.map(c => cleanCell(c).toLowerCase()).filter(Boolean);
+            if (!cells.length) return false;
+            const hasAny = (hints) => hints.filter(h => cells.some(c => c.includes(h))).length;
+            if (hasAny(BOM_HEADER_HINTS)) return false;
+            // ต้องมีคอลัมน์เด่นของงานแผนกอย่างน้อย 1 และเข้าเค้ารวมกันอย่างน้อย 2 — กันเตือนมั่วใส่ BOM จริง
+            return hasAny(DEPT_HEADER_STRONG) >= 1 &&
+                   (hasAny(DEPT_HEADER_STRONG) + hasAny(DEPT_HEADER_WEAK)) >= 2;
+        };
+
+        const findMisnamedDeptSheets = (bomData) =>
+            Object.keys(bomData || {}).filter(name => looksLikeDeptSheet(bomData[name]));
+
         const getStorage = (key, def) => {
             const saved = localStorage.getItem(key);
             try { return saved ? JSON.parse(saved) : def; } catch(e) { return def; }
@@ -2287,6 +2311,8 @@
 
         const SearchPartView = ({ inventory, bomData, deptData = {}, deptConfig = {}, apiUrl, partImages = {}, setPartImages, currentUser }) => {
             const sheetNames = useMemo(() => Object.keys(bomData || {}), [bomData]);
+            // ชีทที่หัวตารางเป็นรายการพาร์ทแผนก แต่ชื่อไม่ได้ขึ้นต้นด้วย DEPT_ (ระบบจึงอ่านผิดผังอยู่)
+            const misnamedDeptSheets = useMemo(() => findMisnamedDeptSheets(bomData), [bomData]);
             const {
                 searchPartQuery, setSearchPartQuery, partSearchResults, rawResults, handlePartSearch,
                 sourceFilter, setSourceFilter, availableSources, sourcesOfPart
@@ -2363,6 +2389,26 @@
                         </div>
 
                         {activeTab === 'search' && (<React.Fragment>
+                        {/* เตือนเมื่อเจอชีทแผนกที่ชื่อไม่ขึ้นต้นด้วย DEPT_ — สาเหตุที่ค้นเลขพาร์ทของแผนกแล้วไม่เจอ */}
+                        {misnamedDeptSheets.length > 0 && (
+                            <div className="mb-6 p-4 rounded-xl border border-amber-300 bg-amber-50 text-amber-900 text-sm">
+                                <div className="font-bold flex items-center gap-2 mb-1">
+                                    <i className="fa-solid fa-triangle-exclamation"></i> ชีทนี้น่าจะเป็นรายการพาร์ทของแผนก แต่ชื่อยังไม่ถูกต้อง
+                                </div>
+                                <p className="leading-relaxed">
+                                    {misnamedDeptSheets.map(n => <code key={n} className="bg-white/70 border border-amber-200 rounded px-1.5 py-0.5 mx-0.5 font-bold">{n}</code>)}
+                                    — ระบบกำลังนับเป็น <b>รุ่นสินค้า</b> และอ่านด้วยผังคอลัมน์ของ BOM (Part No อยู่ช่อง C)
+                                    ซึ่งคนละช่องกับไฟล์ของแผนก (Part No อยู่ช่อง D) ทำให้ <b>ค้นเลขพาร์ทแล้วไม่เจอ</b>
+                                    และชื่อชีทจะไปโผล่ปนกับรุ่นสินค้าจริงในหน้า MRP
+                                </p>
+                                <p className="mt-2 leading-relaxed">
+                                    <b>วิธีแก้:</b> เปลี่ยนชื่อชีทใน Google Sheet ให้ขึ้นต้นด้วย <code className="bg-white/70 border border-amber-200 rounded px-1.5 py-0.5 font-bold">DEPT_</code>
+                                    {misnamedDeptSheets.length === 1 && <> เช่น <code className="bg-white/70 border border-amber-200 rounded px-1.5 py-0.5 font-bold">DEPT_{misnamedDeptSheets[0]}</code></>}
+                                    {" "}แล้วรีเฟรชหน้านี้
+                                </p>
+                            </div>
+                        )}
+
                         <div className="flex gap-2 mb-6">
                             <input
                                 type="text"
