@@ -416,7 +416,9 @@
             { id: 1, username: 'admin', password: '1111', name: 'Administrator', role: 'ADMIN' }
         ];
 
-        const formatNum = (n) => typeof n === 'number' ? n.toLocaleString() : "0";
+        // toLocaleString() ตัดทศนิยมเหลือ 3 ตำแหน่งโดยปริยาย ทำให้ Qty/Unit ที่ละเอียดกว่านั้น
+        // (เช่น 0.000125) ถูกปัดจนเพี้ยนหรือกลายเป็น 0 — บังคับให้แสดงได้ถึง 6 ตำแหน่ง
+        const formatNum = (n) => typeof n === 'number' ? n.toLocaleString(undefined, { maximumFractionDigits: 6 }) : "0";
 
         // Part No ที่พิมพ์มาจาก Excel มักมีขยะที่มองไม่เห็นติดมา: non-breaking space ( ),
         // zero-width space, ขึ้นบรรทัดใหม่ท้ายเซลล์ — .trim() เฉย ๆ ไม่กินตัวพวกนี้ ทำให้พิมพ์เลขที่ถูกต้องแล้วหาไม่เจอ
