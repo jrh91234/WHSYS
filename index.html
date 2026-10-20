@@ -519,6 +519,28 @@
         const findMisnamedDeptSheets = (bomData) =>
             Object.keys(bomData || {}).filter(name => looksLikeDeptSheet(bomData[name]));
 
+        // session จาก Assembly Super App (localStorage SUPERAPP_SSO)
+        const readSuperAppSso = () => {
+            try {
+                const s = JSON.parse(localStorage.getItem('SUPERAPP_SSO') || 'null');
+                return s && s.token && s.authUrl && s.expiresAt > Date.now() ? s : null;
+            } catch (e) { return null; }
+        };
+        // ถาม auth กลางว่าผู้ใช้มีสิทธิ์/role อะไรในแอปนี้ คืน null ถ้าไม่มีสิทธิ์หรือเชื่อมต่อไม่ได้
+        const superAppSsoUser = async (appId) => {
+            const s = readSuperAppSso();
+            if (!s) return null;
+            try {
+                const res = await fetch(s.authUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                    body: JSON.stringify({ action: 'verify', token: s.token, app: appId })
+                });
+                const data = await res.json();
+                return data.success ? data.user : null;
+            } catch (e) { return null; }
+        };
+
         const getStorage = (key, def) => {
             const saved = localStorage.getItem(key);
             try { return saved ? JSON.parse(saved) : def; } catch(e) { return def; }
@@ -670,6 +692,16 @@
                 setStorage(STORAGE_KEY_DEPT_DATA, deptData);
                 setStorage(STORAGE_KEY_DEPT_CONFIG, deptConfig);
             }, [inventory, transactions, users, bomData, bomVersion, partImages, deptData, deptConfig]);
+
+            // Super App SSO: ถ้า login ไว้ที่ Assembly Super App และมีสิทธิ์ WHSYS ให้เข้าสู่ระบบอัตโนมัติ
+            const [ssoPending, setSsoPending] = useState(() => !currentUser && !!readSuperAppSso());
+            useEffect(() => {
+                if (!ssoPending) return;
+                superAppSsoUser('whsys').then(u => {
+                    if (u) setCurrentUser({ id: 'sso:' + u.username, username: u.username, name: u.name, role: u.role, sso: true });
+                    setSsoPending(false);
+                });
+            }, []);
 
             useEffect(() => {
                 if (currentUser) { setStorage(STORAGE_KEY_SESSION, currentUser); }
@@ -832,6 +864,7 @@
                 if (apiUrl) fetch(apiUrl, { method: "POST", mode: "no-cors", body: JSON.stringify({ action: "delete_user", id }) });
             };
 
+            if (!currentUser && ssoPending) return <div className="min-h-screen flex items-center justify-center text-slate-500">กำลังเข้าสู่ระบบด้วย Super App…</div>;
             if (!currentUser) return <LoginView onLogin={handleLogin} isLoading={isLoading} apiUrl={apiUrl} setApiUrl={setApiUrl} />;
 
             return (
