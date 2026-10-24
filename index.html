@@ -30,6 +30,9 @@
         .resizer { position: absolute; right: 0; top: 0; height: 100%; width: 5px; background: rgba(0, 0, 0, 0.05); cursor: col-resize; user-select: none; touch-action: none; z-index: 20; }
         .resizer:hover, .resizing { background: #3b82f6; width: 4px; }
 
+        .tab-strip { scrollbar-width: none; }
+        .tab-strip::-webkit-scrollbar { display: none; }
+
         .sidebar-link { transition: all 0.2s; }
         .sidebar-link:hover, .sidebar-link.active { background-color: #1e293b; color: white; transform: translateX(5px); }
         
@@ -55,6 +58,7 @@
         const STORAGE_KEY_DEPT_CONFIG = "nlc_erp_dept_config";
         const STORAGE_KEY_PART_IMAGES = "nlc_erp_part_images";
         const STORAGE_KEY_PART_CART = "nlc_erp_part_cart";
+        const STORAGE_KEY_TABS = "nlc_erp_tabs";
 
         // สร้าง URL รูป thumbnail จาก Google Drive fileId (ไฟล์ต้องตั้งแชร์ "ใครมีลิงก์ดูได้")
         const driveThumb = (fileId, size = 400) => fileId ? `https://drive.google.com/thumbnail?id=${fileId}&sz=w${size}` : "";
@@ -645,10 +649,40 @@
             );
         };
 
+        // เมนูทั้งหมดที่เปิดเป็นแท็บได้ — ใช้ร่วมกันทั้ง sidebar, แถบเมนูมือถือ และเมนู "+" ของแถบแท็บ
+        const VIEWS = [
+            { id: 'dashboard', label: 'ภาพรวม', short: 'ภาพรวม', icon: 'Dashboard' },
+            { id: 'inventory', label: 'คลังสินค้า', short: 'คลัง', icon: 'Warehouse' },
+            { id: 'mrp', label: 'แผนผลิต (MRP)', short: 'ผลิต', icon: 'Production' },
+            { id: 'searchpart', label: 'ค้นหาพาร์ท', short: 'ค้นหา', icon: 'Search' },
+            { id: 'visualsearch', label: 'ค้นหาด้วยรูป', short: 'รูปภาพ', icon: 'Camera' },
+            { id: 'stockcount', label: 'นับสต๊อก', short: 'นับสต๊อก', icon: 'Clipboard' },
+            { id: 'history', label: 'ประวัติรายการ', short: 'ประวัติ', icon: 'History' },
+            { id: 'settings', label: 'ตั้งค่า', short: 'ตั้งค่า', icon: 'Settings' },
+        ];
+        const VIEW_BY_ID = Object.fromEntries(VIEWS.map(v => [v.id, v]));
+        const newTabId = () => 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
+        // แท็บที่เปิดค้างไว้รอบก่อน — จำแค่ว่าเปิดหน้าอะไรไว้บ้าง สิ่งที่กรอกค้างในแต่ละแท็บไม่ได้จำข้ามการรีเฟรชหน้าเว็บ
+        const loadTabs = () => {
+            const saved = getStorage(STORAGE_KEY_TABS, null);
+            const tabs = (saved?.tabs || []).filter(t => t && t.id && VIEW_BY_ID[t.view]);
+            if (!tabs.length) {
+                const first = { id: newTabId(), view: 'dashboard' };
+                return { tabs: [first], activeId: first.id };
+            }
+            return { tabs, activeId: tabs.some(t => t.id === saved.activeId) ? saved.activeId : tabs[0].id };
+        };
+
         // --- Main App Component ---
         const App = () => {
             const [currentUser, setCurrentUser] = useState(() => getStorage(STORAGE_KEY_SESSION, null));
-            const [currentView, setCurrentView] = useState("dashboard");
+            // หน้าจอเปิดเป็นแท็บแบบเบราว์เซอร์: ทุกแท็บถูก render ค้างไว้ แค่ซ่อนแท็บที่ไม่ได้ดูอยู่
+            // สลับไปมาแล้วสิ่งที่ค้างไว้ (ผลค้นหา, ขั้นตอน MRP, ตำแหน่งเลื่อนจอ) จึงไม่หาย ไม่ต้องโหลดใหม่
+            const [tabState, setTabState] = useState(loadTabs);
+            const [showNewTabMenu, setShowNewTabMenu] = useState(false);
+            const { tabs, activeId } = tabState;
+            const currentView = (tabs.find(t => t.id === activeId) || tabs[0]).view;
             const [inventory, setInventory] = useState(() => getStorage(STORAGE_KEY_INV, INITIAL_INVENTORY));
             const [transactions, setTransactions] = useState(() => getStorage(STORAGE_KEY_TRANS, []));
             const [users, setUsers] = useState(() => getStorage(STORAGE_KEY_USERS, INITIAL_USERS));
@@ -672,6 +706,28 @@
                 setStorage(STORAGE_KEY_DEPT_DATA, deptData);
                 setStorage(STORAGE_KEY_DEPT_CONFIG, deptConfig);
             }, [inventory, transactions, users, bomData, bomVersion, partImages, deptData, deptConfig]);
+
+            useEffect(() => { setStorage(STORAGE_KEY_TABS, tabState); }, [tabState]);
+
+            const openTab = (view) => {
+                const tab = { id: newTabId(), view };
+                setTabState(s => ({ tabs: [...s.tabs, tab], activeId: tab.id }));
+            };
+            // กดเมนู = ไปแท็บของหน้านั้นที่เปิดอยู่แล้ว ถ้ายังไม่มีค่อยเปิดแท็บใหม่ แท็บเดิมจึงไม่ถูกแทนที่จนข้อมูลหาย
+            // (อยากได้หน้าเดียวกันหลายแท็บ เช่นค้นหาพาร์ทสองชุดพร้อมกัน ให้กด "+")
+            const navigate = (view) => {
+                const existing = tabs.find(t => t.view === view);
+                if (existing) setTabState(s => ({ ...s, activeId: existing.id }));
+                else openTab(view);
+            };
+            const closeTab = (id) => setTabState(s => {
+                if (s.tabs.length <= 1) return s;
+                const idx = s.tabs.findIndex(t => t.id === id);
+                const rest = s.tabs.filter(t => t.id !== id);
+                // ปิดแท็บที่ดูอยู่ -> ไปแท็บถัดไปทางขวา (ไม่มีก็ทางซ้าย) แบบเดียวกับเบราว์เซอร์
+                const activeId = s.activeId === id ? rest[Math.min(idx, rest.length - 1)].id : s.activeId;
+                return { tabs: rest, activeId };
+            });
 
             useEffect(() => {
                 if (currentUser) { setStorage(STORAGE_KEY_SESSION, currentUser); }
@@ -834,6 +890,20 @@
                 if (apiUrl) fetch(apiUrl, { method: "POST", mode: "no-cors", body: JSON.stringify({ action: "delete_user", id }) });
             };
 
+            const renderView = (view) => {
+                switch (view) {
+                    case 'dashboard': return <DashboardView inventory={inventory} transactions={transactions} toInventory={()=>navigate('inventory')} />;
+                    case 'inventory': return <InventoryView inventory={inventory} setInventory={setInventory} addTransaction={addTransaction} deleteItem={handleDeleteItem} apiUrl={apiUrl} currentUser={currentUser} setTransactions={setTransactions} partImages={partImages} setPartImages={setPartImages} />;
+                    case 'mrp': return <AdvancedMRPView inventory={inventory} addTransaction={addTransaction} bomData={bomData} setBomData={setBomData} deptData={deptData} deptConfig={deptConfig} apiUrl={apiUrl} partImages={partImages} setPartImages={setPartImages} currentUser={currentUser} />;
+                    case 'searchpart': return <SearchPartView inventory={inventory} bomData={bomData} deptData={deptData} deptConfig={deptConfig} apiUrl={apiUrl} partImages={partImages} setPartImages={setPartImages} currentUser={currentUser} />;
+                    case 'visualsearch': return <VisualSearchView inventory={inventory} bomData={bomData} deptData={deptData} deptConfig={deptConfig} apiUrl={apiUrl} partImages={partImages} setPartImages={setPartImages} currentUser={currentUser} />;
+                    case 'stockcount': return <StockCountView inventory={inventory} setInventory={setInventory} addTransaction={addTransaction} currentUser={currentUser} apiUrl={apiUrl} bomData={bomData} />;
+                    case 'history': return <HistoryView transactions={transactions} />;
+                    case 'settings': return <SettingsView apiUrl={apiUrl} setApiUrl={setApiUrl} users={users} currentUser={currentUser} onSaveUser={handleSaveUser} onDeleteUser={handleDeleteUser} />;
+                    default: return null;
+                }
+            };
+
             if (!currentUser) return <LoginView onLogin={handleLogin} isLoading={isLoading} apiUrl={apiUrl} setApiUrl={setApiUrl} />;
 
             return (
@@ -841,14 +911,7 @@
                     <aside className="w-64 bg-slate-900 text-slate-300 flex flex-col hidden md:flex h-full">
                         <div className="p-6 border-b border-slate-800 font-bold text-white flex items-center gap-2"><Icons.Warehouse/> BOM</div>
                         <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
-                            <SidebarItem icon="Dashboard" label="ภาพรวม" active={currentView==='dashboard'} onClick={()=>setCurrentView('dashboard')} />
-                            <SidebarItem icon="Warehouse" label="คลังสินค้า" active={currentView==='inventory'} onClick={()=>setCurrentView('inventory')} />
-                            <SidebarItem icon="Production" label="แผนผลิต (MRP)" active={currentView==='mrp'} onClick={()=>setCurrentView('mrp')} />
-                            <SidebarItem icon="Search" label="ค้นหาพาร์ท" active={currentView==='searchpart'} onClick={()=>setCurrentView('searchpart')} />
-                            <SidebarItem icon="Camera" label="ค้นหาด้วยรูป" active={currentView==='visualsearch'} onClick={()=>setCurrentView('visualsearch')} />
-                            <SidebarItem icon="Clipboard" label="นับสต๊อก" active={currentView==='stockcount'} onClick={()=>setCurrentView('stockcount')} />
-                            <SidebarItem icon="History" label="ประวัติรายการ" active={currentView==='history'} onClick={()=>setCurrentView('history')} />
-                            <SidebarItem icon="Settings" label="ตั้งค่า" active={currentView==='settings'} onClick={()=>setCurrentView('settings')} />
+                            {VIEWS.map(v => <SidebarItem key={v.id} icon={v.icon} label={v.label} active={currentView===v.id} onClick={()=>navigate(v.id)} />)}
                         </nav>
                         <div className="p-4 border-t border-slate-800 text-xs text-center flex flex-col gap-2">
                             <div className="flex justify-between items-center w-full">
@@ -867,26 +930,67 @@
                         </div>
                     </div>
                     
-                    <main className="flex-1 overflow-y-auto p-4 md:p-8 pt-20 md:pt-8 pb-24 md:pb-8 h-full">
-                        {currentView === 'dashboard' && <DashboardView inventory={inventory} transactions={transactions} toInventory={()=>setCurrentView('inventory')} />}
-                        {currentView === 'inventory' && <InventoryView inventory={inventory} setInventory={setInventory} addTransaction={addTransaction} deleteItem={handleDeleteItem} apiUrl={apiUrl} currentUser={currentUser} setTransactions={setTransactions} partImages={partImages} setPartImages={setPartImages} />}
-                        {currentView === 'mrp' && <AdvancedMRPView inventory={inventory} addTransaction={addTransaction} bomData={bomData} setBomData={setBomData} deptData={deptData} deptConfig={deptConfig} apiUrl={apiUrl} partImages={partImages} setPartImages={setPartImages} currentUser={currentUser} />}
-                        {currentView === 'searchpart' && <SearchPartView inventory={inventory} bomData={bomData} deptData={deptData} deptConfig={deptConfig} apiUrl={apiUrl} partImages={partImages} setPartImages={setPartImages} currentUser={currentUser} />}
-                        {currentView === 'visualsearch' && <VisualSearchView inventory={inventory} bomData={bomData} deptData={deptData} deptConfig={deptConfig} apiUrl={apiUrl} partImages={partImages} setPartImages={setPartImages} currentUser={currentUser} />}
-                        {currentView === 'stockcount' && <StockCountView inventory={inventory} setInventory={setInventory} addTransaction={addTransaction} currentUser={currentUser} apiUrl={apiUrl} bomData={bomData} />}
-                        {currentView === 'history' && <HistoryView transactions={transactions} />}
-                        {currentView === 'settings' && <SettingsView apiUrl={apiUrl} setApiUrl={setApiUrl} users={users} currentUser={currentUser} onSaveUser={handleSaveUser} onDeleteUser={handleDeleteUser} />}
-                    </main>
+                    <div className="flex-1 flex flex-col min-w-0 h-full pt-14 md:pt-0">
+                        <div className="shrink-0 flex items-end bg-slate-200 border-b border-slate-300">
+                            <div className="tab-strip flex items-end gap-1 overflow-x-auto px-2 pt-2 min-w-0">
+                                {tabs.map(t => {
+                                    const v = VIEW_BY_ID[t.view];
+                                    const TabIcon = Icons[v.icon];
+                                    const active = t.id === activeId;
+                                    return (
+                                        <div key={t.id} title={v.label}
+                                            onClick={() => setTabState(s => ({ ...s, activeId: t.id }))}
+                                            onAuxClick={e => { if (e.button === 1) { e.preventDefault(); closeTab(t.id); } }}
+                                            className={`flex items-center gap-2 pl-3 pr-1.5 py-2 rounded-t-lg text-sm font-medium cursor-pointer select-none shrink-0 min-w-[110px] max-w-[200px] ${active ? 'bg-slate-100 text-blue-600 shadow-[0_-1px_3px_rgba(0,0,0,0.08)]' : 'text-slate-600 hover:bg-slate-100/60'}`}>
+                                            <TabIcon className="text-xs" />
+                                            <span className="truncate flex-1">{v.label}</span>
+                                            {tabs.length > 1 && (
+                                                <button onClick={e => { e.stopPropagation(); closeTab(t.id); }} title="ปิดแท็บ"
+                                                    className="w-5 h-5 shrink-0 rounded-full flex items-center justify-center text-slate-400 hover:bg-slate-300 hover:text-slate-700">
+                                                    <Icons.X className="text-xs" />
+                                                </button>
+                                            )}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                            {/* ปุ่ม + อยู่นอกแถบที่เลื่อนได้ ไม่งั้นเมนูที่เด้งลงมาจะโดน overflow ตัดทิ้ง */}
+                            <div className="relative shrink-0 self-center px-1">
+                                <button onClick={() => setShowNewTabMenu(v => !v)} title="เปิดแท็บใหม่"
+                                    className="w-8 h-8 rounded-full flex items-center justify-center text-slate-500 hover:bg-slate-300 hover:text-slate-800">
+                                    <Icons.Plus />
+                                </button>
+                                {showNewTabMenu && (
+                                    <>
+                                        <div className="fixed inset-0 z-40" onClick={() => setShowNewTabMenu(false)}></div>
+                                        <div className="absolute right-0 md:right-auto md:left-0 top-full mt-1 z-50 w-52 bg-white rounded-xl shadow-xl border border-slate-200 py-1 animate-fade-in">
+                                            <div className="px-3 py-1.5 text-[11px] font-bold text-slate-400">เปิดแท็บใหม่</div>
+                                            {VIEWS.map(v => {
+                                                const MenuIcon = Icons[v.icon];
+                                                return (
+                                                    <button key={v.id} onClick={() => { openTab(v.id); setShowNewTabMenu(false); }}
+                                                        className="w-full text-left px-3 py-2 text-sm text-slate-700 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-3">
+                                                        <span className="w-4 text-center"><MenuIcon /></span> {v.label}
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
+                                    </>
+                                )}
+                            </div>
+                        </div>
+
+                        <div className="flex-1 relative min-h-0">
+                            {tabs.map(t => (
+                                <main key={t.id} className={`absolute inset-0 overflow-y-auto p-4 md:p-8 pb-24 md:pb-8 ${t.id === activeId ? '' : 'hidden'}`}>
+                                    {renderView(t.view)}
+                                </main>
+                            ))}
+                        </div>
+                    </div>
 
                     <div className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 px-4 py-2 z-30 flex justify-between items-center shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)] pb-safe">
-                        <MobileNavItem icon="Dashboard" label="ภาพรวม" active={currentView==='dashboard'} onClick={()=>setCurrentView('dashboard')} />
-                        <MobileNavItem icon="Warehouse" label="คลัง" active={currentView==='inventory'} onClick={()=>setCurrentView('inventory')} />
-                        <MobileNavItem icon="Production" label="ผลิต" active={currentView==='mrp'} onClick={()=>setCurrentView('mrp')} />
-                        <MobileNavItem icon="Search" label="ค้นหา" active={currentView==='searchpart'} onClick={()=>setCurrentView('searchpart')} />
-                        <MobileNavItem icon="Camera" label="รูปภาพ" active={currentView==='visualsearch'} onClick={()=>setCurrentView('visualsearch')} />
-                        <MobileNavItem icon="Clipboard" label="นับสต๊อก" active={currentView==='stockcount'} onClick={()=>setCurrentView('stockcount')} />
-                        <MobileNavItem icon="History" label="ประวัติ" active={currentView==='history'} onClick={()=>setCurrentView('history')} />
-                        <MobileNavItem icon="Settings" label="ตั้งค่า" active={currentView==='settings'} onClick={()=>setCurrentView('settings')} />
+                        {VIEWS.map(v => <MobileNavItem key={v.id} icon={v.icon} label={v.short} active={currentView===v.id} onClick={()=>navigate(v.id)} />)}
                     </div>
                 </div>
             );
